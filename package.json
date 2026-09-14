@@ -1,0 +1,85 @@
+{
+  "name": "dsh-opencode-suite",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness plugin: one OpenCode suite — pooled multi-key Go tier with quota failover, both tiers' model catalogs, and opencode-style session headers on the wire",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kexuejin/dsh-opencode-suite.git"
+  },
+  "homepage": "https://github.com/kexuejin/dsh-opencode-suite#readme",
+  "bugs": {
+    "url": "https://github.com/kexuejin/dsh-opencode-suite/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "opencode",
+    "opencode-go",
+    "opencode-zen",
+    "quota",
+    "usage",
+    "failover",
+    "api-key-pool",
+    "session-id"
+  ],
+  "type": "module",
+  "main": "./index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "index.js",
+    "pool.js",
+    "usage.js",
+    "catalog.js",
+    "session.js",
+    "free-tier.js",
+    "tools.js",
+    "typert.host.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./typert": "./typert.host.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    }
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0",
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-credentials": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-settings": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-llm-pi-ai": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-home-paths": "^0.1.5-rc.1",
+    "@earendil-works/pi-ai": "^0.85.1"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

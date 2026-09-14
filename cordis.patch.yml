@@ -1,0 +1,24 @@
+# dsh-opencode-suite — the single OpenCode plugin for a dsh profile.
+#
+# `dsh plugin --profile <name> add <this package>` installs the dependency and,
+# seeing the `dsh.bundle.patch` declaration in package.json, appends
+# `dsh-opencode-suite` to the profile's `dsh.profile.bundles`; the profile boot
+# then merges this single insert.
+#
+# Takeover: the pool serves the `opencode-go` route, which requires removing
+# the `opencode-go` supplier row from Settings → Models. While another adapter
+# still owns the route the plugin stays dormant and the settings card shows
+# the takeover hint. The free tier (`opencode`) keeps its llm-pi-ai row; this
+# plugin only manages that route's model list through the settings seam.
+#
+# Everything below is the default; every key is optional. Keys themselves are
+# managed from the settings card and live in the settings store, not here.
+- insert:
+    - id: opencode-suite
+      name: 'dsh-opencode-suite'
+      config:
+        route: opencode-go
+        preemptAtPercent: 100
+        modelMode: all
+        sessionHeaders:
+          enabled: true

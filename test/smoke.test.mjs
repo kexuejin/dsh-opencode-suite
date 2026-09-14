@@ -1,0 +1,996 @@
+import assert from 'node:assert/strict'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import test from 'node:test'
+
+// Cordis-context smoke tests. They exercise the real plugin against mocked
+// seams, but need the DeepSeek Harness peer dependencies installed. In a
+// checkout that does not have them (e.g. `node --test` on a fresh clone), every
+// test skips instead of failing: the pure module tests already cover the
+// dependency-free logic.
+
+/** Point DSH_HOME at a fresh temp dir so tests never touch the real state file. */
+function isolateHome(t) {
+  const previous = process.env.DSH_HOME
+  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-opencode-suite-'))
+  t.after(() => {
+    if (previous === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previous
+  })
+}
+
+async function loadHarness(t) {
+  isolateHome(t)
+  let Context, OpenCodeSuite
+  try {
+    ;({ Context } = await import('@deepseek-ai/cordis'))
+    ;({ OpenCodeSuite } = await import('../index.js'))
+  } catch {
+    t.skip('harness peer deps not installed — link the DSH node_modules to run smoke tests')
+    return null
+  }
+  return { Context, OpenCodeSuite }
+}
+
+/* ------------------------------------------------------------------ *
+ * Doubles
+ * ------------------------------------------------------------------ */
+
+function makeMockLlms() {
+  return {
+    registered: [],
+    adapter: null,
+    registerAdapter(routes, adapter) {
+      this.registered.push([...routes])
+      this.adapter = adapter
+      return {
+        replace: next => { this.registered.push([...next]) },
+      }
+    },
+  }
+}
+
+/**
+ * The settings service double. It carries BOTH faces of the real contract: the
+ * service-level `get(ns)` the free-tier path reads, and the owner scope
+ * `register()` hands back for this plugin's own namespace.
+ *
+ * `update` + `watch` are real here: the plugin re-reads its own configuration
+ * through `scope.get()` and re-applies it from `scope.watch()`, so a double
+ * that swallowed either half would make every settings write look like a no-op.
+ */
+function makeMockSettings(initialConfig, { sections = {}, onRegister } = {}) {
+  let current = () => ({ ...initialConfig })
+  const watchers = new Set()
+  const scope = {
+    get: () => current(),
+    watch: callback => {
+      watchers.add(callback)
+      return () => watchers.delete(callback)
+    },
+    update: async patch => {
+      const prev = current()
+      const next = { ...prev, ...patch }
+      current = () => next
+      onRegister?.(patch, next)
+      for (const callback of watchers) await callback(next, prev)
+    },
+    replace: async section => {
+      const prev = current()
+      const next = { ...section }
+      current = () => next
+      for (const callback of watchers) await callback(next, prev)
+    },
+  }
+  const store = { ...sections }
+  return {
+    scope,
+    writable: true,
+    register: () => scope,
+    get: ns => store[ns],
+    describe: () => Object.keys(store).map(ns => ({ ns, revision: store[ns]?.__revision ?? 7 })),
+    update: async (ns, patch) => {
+      store[ns] = { ...(store[ns] ?? {}), ...patch }
+      store[ns].__revision = (store[ns].__revision ?? 7) + 1
+    },
+    __store: store,
+  }
+}
+
+/** A tools registry double that records what the plugin registers. */
+function makeMockTools() {
+  return {
+    tools: [],
+    register(definition) {
+      this.tools.push(definition)
+      return () => {}
+    },
+  }
+}
+
+const BASE_CONFIG = {
+  route: 'opencode-go',
+  keys: [],
+  preemptAtPercent: 100,
+  switchAfterConsecutiveFailures: 0,
+  modelMode: 'all',
+  models: [],
+  imageModels: [],
+  modelCapacities: {},
+  usageBaseUrl: 'https://opencode.ai/zen/go/v1/usage',
+  modelsBaseUrl: 'https://opencode.ai/zen/go/v1/models',
+  freeModelsBaseUrl: 'https://opencode.ai/zen/v1/models',
+  usageRefreshMs: 30000,
+  timeoutMs: 15000,
+}
+
+/** The llm-pi-ai section a real deployment has, for the free-tier path. */
+function freeTierSection(models = []) {
+  return {
+    providers: {
+      opencode: {
+        apiKeyEnv: 'PI_AI_API_KEY',
+        baseURL: 'https://opencode.ai/zen/v1',
+        api: 'openai-completions',
+        models,
+      },
+    },
+    __revision: 7,
+  }
+}
+
+async function boot(OpenCodeSuite, Context, { config = {}, sections, llm } = {}) {
+  const root = new Context()
+  const llms = llm ?? makeMockLlms()
+  const settings = makeMockSettings({ ...BASE_CONFIG, ...config }, { sections })
+  const tools = makeMockTools()
+  root.provide('llm', llms)
+  root.provide('settings', settings)
+  root.provide('credentials', { resolve: async () => undefined })
+  root.provide('tools', tools)
+  await root.plugin(OpenCodeSuite, {})
+  return { root, llms, settings, tools, plugin: root.get('opencodeSuite') }
+}
+
+const TWO_KEYS = [
+  { id: 'acc-a', label: '主号', apiKeyEnv: 'OPENCODE_GO_KEY_A' },
+  { id: 'acc-b', label: '备用2', apiKeyEnv: 'OPENCODE_GO_KEY_B' },
+]
+
+const REQUEST = {
+  provider: 'opencode-go',
+  model: 'deepseek-v4-flash',
+  messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+}
+
+/* ------------------------------------------------------------------ *
+ * Mount, route ownership, catalog
+ * ------------------------------------------------------------------ */
+
+test('the plugin takes over the opencode-go route and serves the pi-ai catalog', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, llms, plugin } = await boot(harness.OpenCodeSuite, harness.Context)
+
+  assert.equal(plugin.takeoverState(), 'serving')
+  assert.deepEqual(llms.registered[0], ['opencode-go'])
+
+  const models = await llms.adapter.listModels('opencode-go')
+  assert.ok(Array.isArray(models) && models.length > 0, 'the catalog lists models')
+  assert.ok(models.map(m => m.id).includes('deepseek-v4-flash'))
+
+  // providerInfo must echo the route it owns, or the harness rejects the route.
+  assert.equal(llms.adapter.providerInfo('opencode-go').id, 'opencode-go')
+  await root.fiber.dispose()
+})
+
+test('the plugin registers all six agent tools with unique names', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, tools } = await boot(harness.OpenCodeSuite, harness.Context)
+  const names = tools.tools.map(tool => tool.name).sort()
+  assert.deepEqual(names, [
+    'oc_model_add',
+    'oc_model_remove',
+    'oc_model_status',
+    'oc_model_sync',
+    'oc_suite_pool',
+    'oc_suite_status',
+  ])
+  for (const tool of tools.tools) {
+    assert.equal(typeof tool.execute, 'function', `${tool.name} is executable`)
+    assert.ok(tool.description.length > 40, `${tool.name} carries a real description`)
+    assert.equal(typeof tool.output.render, 'function', `${tool.name} renders its own output`)
+  }
+  await root.fiber.dispose()
+})
+
+test('a dry pool yields one terminal quota error instead of making a request', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, llms } = await boot(harness.OpenCodeSuite, harness.Context)
+
+  const chunks = []
+  for await (const chunk of llms.adapter.stream(REQUEST)) chunks.push(chunk)
+  assert.equal(chunks.length, 1)
+  assert.equal(chunks[0].type, 'finish')
+  assert.equal(chunks[0].reason.kind, 'error')
+  assert.equal(chunks[0].reason.failure.code, 'QUOTA')
+  await root.fiber.dispose()
+})
+
+test('a key whose credential cannot be resolved fails loud', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  // The mock credentials service resolves nothing, so the pool key is unusable
+  // and the failure must be MISSING_CREDENTIAL rather than a silent fallback to
+  // some ambient environment key.
+  const { root, llms } = await boot(harness.OpenCodeSuite, harness.Context, { config: { keys: [TWO_KEYS[0]] } })
+  await assert.rejects(async () => {
+    for await (const _chunk of llms.adapter.stream(REQUEST)) { /* drain */ }
+  }, err => err.code === 'MISSING_CREDENTIAL')
+  await root.fiber.dispose()
+})
+
+/* ------------------------------------------------------------------ *
+ * Takeover protocol
+ * ------------------------------------------------------------------ */
+
+test('dormant while the route is owned elsewhere, and it takes over on adapters-updated', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const llms = makeMockLlms()
+  let blocked = true
+  const recorded = []
+  llms.registerAdapter = (routes, adapter) => {
+    if (blocked) throw new Error('llm: duplicate adapter for provider "opencode-go"')
+    llms.adapter = adapter
+    recorded.push([...routes])
+    return { replace: next => { recorded.push([...next]) } }
+  }
+
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context, { llm: llms })
+  assert.equal(plugin.takeoverState(), 'waiting')
+  const waiting = await plugin.status()
+  assert.equal(waiting.takeover, 'waiting')
+  assert.ok(waiting.takeoverHint, 'the refusal reason rides the card hint')
+
+  blocked = false
+  root.emit('llm/adapters-updated')
+  assert.equal(plugin.takeoverState(), 'serving')
+  assert.deepEqual(recorded, [['opencode-go']])
+  const serving = await plugin.status()
+  assert.equal(serving.takeover, 'serving')
+  assert.equal(serving.takeoverHint, null)
+  await root.fiber.dispose()
+})
+
+/* ------------------------------------------------------------------ *
+ * Failover
+ * ------------------------------------------------------------------ */
+
+/** Scripted fake inner adapter: each stream() call consumes one script step. */
+class FakeInnerAdapter {
+  constructor(script) {
+    this.script = script
+    this.calls = 0
+  }
+
+  async *stream(_options) {
+    const step = this.script[Math.min(this.calls++, this.script.length - 1)]
+    for (const chunk of step) yield chunk
+  }
+}
+
+const quotaFinish = {
+  type: 'finish',
+  reason: { kind: 'error', failure: { code: 'QUOTA', message: 'quota exhausted' } },
+}
+const successChunks = [
+  { type: 'text-delta', index: 0, text: 'hello' },
+  { type: 'finish', reason: { kind: 'stop' } },
+]
+
+/**
+ * The gateway answers a dead key and an unservable model on the same 401, and a
+ * region block on 403 — so the harness labels all three `AUTH` and the payload
+ * is the only thing that tells them apart. Both captured live from zen/go/v1.
+ */
+const GATEWAY_AUTH_ERROR = 'OpenAI API error (401): {"type":"error","error":{"type":"AuthError","message":"Invalid API key."}}'
+const GATEWAY_REGION_ERROR = 'OpenAI API error (403): {"type":"RegionError","message":"This model is not available in your country."}'
+
+test('failover: a pre-content quota failure silently retries with the next key', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, llms, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { keys: TWO_KEYS },
+  })
+
+  const fake = new FakeInnerAdapter([[quotaFinish], successChunks])
+  plugin.makeAttemptAdapter = () => fake
+
+  const chunks = []
+  for await (const chunk of llms.adapter.stream(REQUEST)) chunks.push(chunk)
+
+  // The consumer sees exactly one successful stream — no error ever surfaced.
+  assert.equal(chunks.length, 2)
+  assert.deepEqual(chunks[0], { type: 'text-delta', index: 0, text: 'hello' })
+  assert.equal(chunks[1].reason.kind, 'stop')
+  assert.equal(fake.calls, 2, 'one attempt per key')
+  assert.equal(plugin.pool.stateOf('acc-a').state, 'exhausted')
+  assert.equal(plugin.pool.activeId, 'acc-b')
+  assert.equal(plugin.pool.lastSwitch.reason, 'quota')
+  await root.fiber.dispose()
+})
+
+test('failover: a mid-stream quota failure surfaces the error but still rotates', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, llms, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { keys: TWO_KEYS },
+  })
+
+  // Content was already emitted → a silent retry would duplicate it.
+  const fake = new FakeInnerAdapter([[
+    { type: 'text-delta', index: 0, text: 'partial' },
+    quotaFinish,
+  ]])
+  plugin.makeAttemptAdapter = () => fake
+
+  const chunks = []
+  for await (const chunk of llms.adapter.stream(REQUEST)) chunks.push(chunk)
+
+  assert.equal(chunks.length, 2)
+  assert.equal(chunks[0].type, 'text-delta')
+  assert.equal(chunks[1].reason.failure.code, 'QUOTA')
+  assert.equal(fake.calls, 1, 'no silent retry after content was emitted')
+  assert.equal(plugin.pool.activeId, 'acc-b', 'the pool still rotates for the next request')
+  await root.fiber.dispose()
+})
+
+test('failover: exhausting every key surfaces one terminal dry-pool error', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, llms, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { keys: TWO_KEYS },
+  })
+  const fake = new FakeInnerAdapter([[quotaFinish]])
+  plugin.makeAttemptAdapter = () => fake
+
+  const chunks = []
+  for await (const chunk of llms.adapter.stream(REQUEST)) chunks.push(chunk)
+  assert.equal(chunks.length, 1)
+  assert.equal(chunks[0].reason.failure.code, 'QUOTA')
+  assert.equal(fake.calls, 2, 'one attempt per key')
+  assert.equal(plugin.pool.usableCount(), 0)
+  await root.fiber.dispose()
+})
+
+test('failover: a non-rotation failure keeps the key and surfaces immediately', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, llms, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { keys: TWO_KEYS },
+  })
+  const fake = new FakeInnerAdapter([[
+    { type: 'finish', reason: { kind: 'error', failure: { code: 'RATE_LIMIT', message: 'slow down' } } },
+  ]])
+  plugin.makeAttemptAdapter = () => fake
+
+  const chunks = []
+  for await (const chunk of llms.adapter.stream(REQUEST)) chunks.push(chunk)
+  assert.equal(chunks.length, 1)
+  assert.equal(chunks[0].reason.failure.code, 'RATE_LIMIT')
+  assert.equal(fake.calls, 1, 'no rotation retry for a transient code')
+  assert.equal(plugin.pool.stateOf('acc-a').state, 'healthy')
+  assert.equal(plugin.pool.activeId, 'acc-a')
+  await root.fiber.dispose()
+})
+
+test('failover: a thrown credential rejection also rotates while nothing was emitted', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, llms, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { keys: TWO_KEYS },
+  })
+  let calls = 0
+  plugin.makeAttemptAdapter = () => ({
+    async *stream() {
+      calls += 1
+      if (calls === 1) {
+        const error = new Error(GATEWAY_AUTH_ERROR)
+        error.code = 'AUTH'
+        throw error
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  })
+
+  const chunks = []
+  for await (const chunk of llms.adapter.stream(REQUEST)) chunks.push(chunk)
+  assert.equal(chunks.length, 1)
+  assert.equal(chunks[0].reason.kind, 'stop')
+  assert.equal(calls, 2)
+  assert.equal(plugin.pool.stateOf('acc-a').state, 'invalid')
+  await root.fiber.dispose()
+})
+
+test('failover: a region-blocked model is reported once and leaves every key healthy', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, llms, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { keys: TWO_KEYS },
+  })
+  const fake = new FakeInnerAdapter([[
+    { type: 'finish', reason: { kind: 'error', failure: { code: 'AUTH', message: GATEWAY_REGION_ERROR } } },
+  ]])
+  plugin.makeAttemptAdapter = () => fake
+
+  const chunks = []
+  for await (const chunk of llms.adapter.stream(REQUEST)) chunks.push(chunk)
+
+  // Exactly one attempt: the second key would eat the same 403, so rotating
+  // would only burn a request and delay the answer.
+  assert.equal(fake.calls, 1)
+  assert.equal(chunks.length, 1)
+  const { failure } = chunks[0].reason
+  assert.equal(failure.code, 'AUTH', 'the harness code is preserved for the UI')
+  assert.match(failure.message, /rejected model "deepseek-v4-flash" for this account or region/)
+  assert.match(failure.message, /not a credential fault/)
+  assert.match(failure.message, /RegionError/, 'the provider\'s own words survive re-wording')
+
+  // The regression this guards: a region block must never dry out the pool.
+  assert.equal(plugin.pool.stateOf('acc-a').state, 'healthy')
+  assert.equal(plugin.pool.currentKey().id, 'acc-a')
+  assert.equal(plugin.pool.usableCount(), 2)
+  await root.fiber.dispose()
+})
+
+test('failover: a model rejection does not stop the next request from using the same key', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, llms, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { keys: TWO_KEYS },
+  })
+  const fake = new FakeInnerAdapter([
+    [{ type: 'finish', reason: { kind: 'error', failure: { code: 'AUTH', message: GATEWAY_REGION_ERROR } } }],
+    successChunks,
+  ])
+  plugin.makeAttemptAdapter = () => fake
+
+  for await (const _chunk of llms.adapter.stream(REQUEST)) { /* drain the rejection */ }
+  const chunks = []
+  for await (const chunk of llms.adapter.stream(REQUEST)) chunks.push(chunk)
+
+  assert.equal(chunks[chunks.length - 1].reason.kind, 'stop', 'the same key serves the next model fine')
+  assert.equal(plugin.pool.activeId, 'acc-a')
+  await root.fiber.dispose()
+})
+
+/* ------------------------------------------------------------------ *
+ * Model selection gate
+ * ------------------------------------------------------------------ */
+
+test('custom mode filters listModels and refuses an unselected model', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, llms } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { modelMode: 'custom', models: ['deepseek-v4-flash'] },
+  })
+
+  const listed = await llms.adapter.listModels('opencode-go')
+  assert.deepEqual(listed.map(entry => entry.id), ['deepseek-v4-flash'])
+  await assert.rejects(
+    () => llms.adapter.resolveModel('opencode-go', 'deepseek-v4-pro'),
+    err => err.code === 'UNKNOWN_MODEL',
+  )
+  await assert.rejects(async () => {
+    for await (const _chunk of llms.adapter.stream({ ...REQUEST, model: 'deepseek-v4-pro' })) { /* drain */ }
+  }, err => err.code === 'UNKNOWN_MODEL')
+  await root.fiber.dispose()
+})
+
+test('all mode exposes the whole catalog and gates nothing', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, llms } = await boot(harness.OpenCodeSuite, harness.Context)
+  const listed = await llms.adapter.listModels('opencode-go')
+  assert.ok(listed.length > 1)
+  const resolved = await llms.adapter.resolveModel('opencode-go', listed[0].id)
+  assert.equal(resolved.id, listed[0].id)
+  await root.fiber.dispose()
+})
+
+test('a declared image model gains the image modality in the served catalog', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, llms } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { imageModels: ['deepseek-v4-flash'] },
+  })
+  const listed = await llms.adapter.listModels('opencode-go')
+  const target = listed.find(entry => entry.id === 'deepseek-v4-flash')
+  assert.ok(target.inputModalities.includes('image'), 'the declaration reaches inputModalities')
+  const other = listed.find(entry => entry.id !== 'deepseek-v4-flash')
+  if (other) assert.equal(other.inputModalities.includes('image'), other.inputModalities.includes('image'))
+  await root.fiber.dispose()
+})
+
+test('image declarations can be changed at runtime and reverted', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, llms, plugin } = await boot(harness.OpenCodeSuite, harness.Context)
+  const target = 'deepseek-v4-flash'
+  const inputsOf = async () => (await llms.adapter.listModels('opencode-go'))
+    .find(entry => entry.id === target).inputModalities
+
+  assert.ok(!(await inputsOf()).includes('image'), 'the Go catalog declares no images by default')
+
+  // Declaring it reaches the served catalog without a restart …
+  await plugin.putConfig({ imageModels: [target] })
+  assert.ok((await inputsOf()).includes('image'), 'the write is live')
+
+  // … and withdrawing it takes effect just as directly.
+  await plugin.putConfig({ imageModels: [] })
+  assert.ok(!(await inputsOf()).includes('image'), 'clearing withdraws it')
+
+  // Ids are ids: a blank one is refused rather than silently dropped.
+  await assert.rejects(() => plugin.putConfig({ imageModels: [target, '  '] }), /imageModels/)
+  await root.fiber.dispose()
+})
+
+/* ------------------------------------------------------------------ *
+ * Session headers, end to end
+ * ------------------------------------------------------------------ */
+
+test('scopeStream makes the session id visible to a fetch issued inside the stream', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  // The recorder stands in for the REAL fetch, so it must be installed before
+  // the plugin mounts: the plugin's wrapper chains over whatever fetch exists
+  // at mount time and would otherwise be bypassed entirely.
+  const realFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: String(input), init })
+    return { ok: true }
+  }
+  t.after(() => { globalThis.fetch = realFetch })
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context)
+
+  // The downstream factory mirrors the real adapter: it fetches from inside its
+  // own generator body, after an await, which is exactly where a scope that did
+  // not propagate through async context would lose the id.
+  const downstream = () => (async function* () {
+    await new Promise(resolve => setImmediate(resolve))
+    await globalThis.fetch('https://opencode.ai/zen/go/v1/chat/completions', { method: 'POST' })
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })()
+
+  const stream = plugin.scopeStream(
+    { provider: 'opencode-go', model: 'deepseek-v4-flash', sessionId: 'session-e820d21d-1234-5678-90ab-a309f722a3bc' },
+    downstream,
+  )
+  for await (const _chunk of stream) { /* drain */ }
+
+  assert.equal(calls.length, 1)
+  const headers = calls[0].init.headers
+  assert.equal(headers.get('x-opencode-session'), 'q8GVZEKY',
+    'the wire token is the deterministic nanoid(8) of the uuid, not the raw id')
+  assert.equal(headers.get('x-session-affinity'), 'q8GVZEKY')
+  assert.equal(calls[0].init.method, 'POST')
+
+  const [entry] = plugin.injectionLog.list()
+  assert.ok(entry, 'the injection is recorded for the card')
+  assert.equal(entry.sessionId, 'session-e820d21d-1234-5678-90ab-a309f722a3bc')
+  await root.fiber.dispose()
+})
+
+test('concurrent streams keep their own session ids', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const realFetch = globalThis.fetch
+  const seen = []
+  globalThis.fetch = async (input, init) => {
+    seen.push({ url: String(input), token: init.headers.get('x-opencode-session') })
+    return { ok: true }
+  }
+  t.after(() => { globalThis.fetch = realFetch })
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context)
+
+  const downstream = label => (async function* () {
+    for (let i = 0; i < 3; i++) {
+      await new Promise(resolve => setImmediate(resolve))
+      await globalThis.fetch('https://opencode.ai/zen/go/v1/chat/completions', { method: 'POST' })
+      yield { type: 'text-delta', index: i, text: label }
+    }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })()
+
+  const a = plugin.scopeStream({ provider: 'opencode-go', sessionId: 'session-aaaaaaaa-0000-0000-0000-000000000000' }, () => downstream('a'))
+  const b = plugin.scopeStream({ provider: 'opencode-go', sessionId: 'session-bbbbbbbb-0000-0000-0000-000000000000' }, () => downstream('b'))
+  const ia = a[Symbol.asyncIterator]()
+  const ib = b[Symbol.asyncIterator]()
+  for (let i = 0; i < 4; i++) {
+    await ia.next()
+    await ib.next()
+  }
+
+  const tokensA = new Set(seen.filter((_, index) => index % 2 === 0).map(entry => entry.token))
+  const tokensB = new Set(seen.filter((_, index) => index % 2 === 1).map(entry => entry.token))
+  assert.equal(tokensA.size, 1, 'stream A used exactly one token')
+  assert.equal(tokensB.size, 1, 'stream B used exactly one token')
+  assert.notEqual([...tokensA][0], [...tokensB][0], 'the two conversations are distinct on the wire')
+  await root.fiber.dispose()
+})
+
+test('scopeStream is an exact pass-through when session headers are disabled', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const realFetch = globalThis.fetch
+  t.after(() => { globalThis.fetch = realFetch })
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { sessionHeaders: { enabled: false } },
+  })
+
+  const sentinel = (async function* () {
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })()
+  const options = { provider: 'opencode-go', model: 'm' }
+  const returned = plugin.scopeStream(options, () => sentinel)
+  assert.equal(returned, sentinel, 'the very same iterable is handed back')
+  assert.equal(options.sessionId, undefined, 'call options are never mutated by default')
+  await root.fiber.dispose()
+})
+
+test('seedSessionId fills a missing option only for a configured opencode route', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { sessionHeaders: { seedSessionId: true } },
+  })
+  const opencode = { provider: 'opencode-go', model: 'm' }
+  for await (const _chunk of plugin.scopeStream(opencode, () => (async function* () {
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })())) { /* drain */ }
+  assert.equal(typeof opencode.sessionId, 'string', 'a configured opencode route gets seeded')
+
+  const other = { provider: 'deepseek', model: 'm' }
+  for await (const _chunk of plugin.scopeStream(other, () => (async function* () {
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })())) { /* drain */ }
+  assert.equal(other.sessionId, undefined, 'an unconfigured route is never touched')
+  await root.fiber.dispose()
+})
+
+/* ------------------------------------------------------------------ *
+ * RPC surface
+ * ------------------------------------------------------------------ */
+
+test('status() is complete and free of undefined, so the strict codec accepts it', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { keys: TWO_KEYS },
+    sections: { 'llm-pi-ai': freeTierSection([{ id: 'big-pickle', name: 'Big Pickle', contextWindow: 1, maxTokens: 1, input: ['text'] }]) },
+  })
+  const status = await plugin.status()
+
+  assert.equal(status.takeover, 'serving')
+  assert.equal(status.route, 'opencode-go')
+  assert.equal(status.usableCount, 2)
+  assert.equal(status.keys.length, 2)
+  assert.ok(status.availableModels.length > 0)
+  assert.equal(status.freeTier.route, 'opencode')
+  assert.equal(status.freeTier.exists, true)
+  assert.deepEqual(status.freeTier.configured.map(entry => entry.id), ['big-pickle'])
+  assert.equal(status.sessionHeaders.enabled, true)
+  assert.equal(status.sessionHeaders.nanoidLength, 8)
+
+  // A strict codec rejects an absent member, so no field may be `undefined`:
+  // an optional fact must be an explicit null.
+  const walk = (value, path) => {
+    if (value === undefined) assert.fail(`${path} is undefined — the strict codec would reject it`)
+    if (Array.isArray(value)) value.forEach((entry, index) => walk(entry, `${path}[${index}]`))
+    else if (value !== null && typeof value === 'object') {
+      for (const [key, entry] of Object.entries(value)) walk(entry, `${path}.${key}`)
+    }
+  }
+  walk(status, 'status')
+
+  // `availableModels` carries the live usage error rather than a fake number:
+  // the mock credentials resolve nothing, so each key reports "no-api-key".
+  assert.equal(status.keys[0].usage, null)
+  assert.equal(status.keys[0].usageError, 'no-api-key')
+  assert.equal(status.keys[0].credentialSet, false)
+  await root.fiber.dispose()
+})
+
+test('putConfig validates thresholds, lists, and the custom-mode invariant', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context)
+
+  await plugin.putConfig({ preemptAtPercent: 95 })
+  assert.equal((await plugin.status()).preemptAtPercent, 95)
+
+  await assert.rejects(() => plugin.putConfig({ preemptAtPercent: 101 }), /0\.\.100/)
+  await assert.rejects(() => plugin.putConfig({ switchAfterConsecutiveFailures: 21 }), /0\.\.20/)
+  await assert.rejects(() => plugin.putConfig({ modelMode: 'sometimes' }), /"all" or "custom"/)
+  await assert.rejects(() => plugin.putConfig({ models: ['ok', '  '] }), /non-empty/)
+  await assert.rejects(() => plugin.putConfig({ modelCapacities: { m: { contextWindow: 0, maxTokens: 1 } } }), /positive integer/)
+  await assert.rejects(() => plugin.putConfig({}), /no known fields/)
+  // Custom mode with nothing selected would expose an empty catalog.
+  await assert.rejects(() => plugin.putConfig({ modelMode: 'custom' }), /at least one model/)
+  await root.fiber.dispose()
+})
+
+test('putSessionHeaders round-trips through the settings document', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context)
+
+  await plugin.putSessionHeaders({ enabled: false, nanoidLength: 16, nanoidAlphabet: 'urlsafe' })
+  const status = await plugin.status()
+  assert.equal(status.sessionHeaders.enabled, false)
+  assert.equal(status.sessionHeaders.nanoidLength, 16)
+  assert.equal(status.sessionHeaders.nanoidAlphabet, 'urlsafe')
+
+  await assert.rejects(() => plugin.putSessionHeaders({ nanoidLength: 99 }), /4\.\.32/)
+  await assert.rejects(() => plugin.putSessionHeaders({ nanoidAlphabet: 'emoji' }), /alphanumeric/)
+  await assert.rejects(() => plugin.putSessionHeaders({ extraHeaders: { 'x-a': 5 } }), /must be a string/)
+  // A header name outside the RFC token grammar is dropped by normalization
+  // rather than reaching the injector and silently doing nothing.
+  await plugin.putSessionHeaders({ headers: ['x-opencode-session', 'not a header'] })
+  assert.deepEqual((await plugin.status()).sessionHeaders.headers, ['x-opencode-session'])
+  await root.fiber.dispose()
+})
+
+test('putKeys refuses a malformed roster before anything persists', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context)
+  await assert.rejects(() => plugin.putKeys([{ id: 'BAD ID', label: 'x', apiKeyEnv: 'K' }]), /must match/)
+  await assert.rejects(() => plugin.putKeys([TWO_KEYS[0], TWO_KEYS[0]]), /duplicate key id/)
+  await plugin.putKeys(TWO_KEYS)
+  assert.equal((await plugin.status()).keys.length, 2)
+  await root.fiber.dispose()
+})
+
+test('pool actions move the active key and refuse an unusable target', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { keys: TWO_KEYS },
+  })
+  assert.equal((await plugin.status()).activeId, 'acc-a')
+  await plugin.setActive('acc-b')
+  assert.equal((await plugin.status()).activeId, 'acc-b')
+  await plugin.setDisabled('acc-b', true)
+  assert.equal((await plugin.status()).activeId, 'acc-a')
+  await assert.rejects(() => plugin.setActive('acc-b'), /not usable/)
+  await assert.rejects(() => plugin.setActive('nope'), /unknown key/)
+  await root.fiber.dispose()
+})
+
+/* ------------------------------------------------------------------ *
+ * Free tier (llm-pi-ai owned)
+ * ------------------------------------------------------------------ */
+
+test('the free tier reports drift and writes back through the settings seam', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, settings, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    sections: {
+      'llm-pi-ai': freeTierSection([
+        { id: 'big-pickle', name: 'Big Pickle', contextWindow: 128000, maxTokens: 32000, input: ['text'] },
+        { id: 'delisted-free', name: 'Delisted', contextWindow: 1, maxTokens: 1, input: ['text'] },
+      ]),
+    },
+  })
+  // The plugin must never reach the network in a test: stub the listing.
+  plugin.tierListing = async () => [
+    { id: 'big-pickle', name: 'Big Pickle' },
+    { id: 'ling-3.0-flash-fin-free', name: 'Ling 3.0 Flash Fin Free' },
+  ]
+
+  const free = await plugin.freeTier()
+  assert.equal(free.exists, true)
+  assert.equal(free.apiKeyEnv, 'PI_AI_API_KEY')
+  assert.deepEqual(free.configured.map(entry => entry.id), ['big-pickle', 'delisted-free'])
+  assert.deepEqual(free.added, ['ling-3.0-flash-fin-free'])
+  assert.deepEqual(free.stale, ['delisted-free'])
+
+  const written = await plugin.putFreeTierModels([
+    { id: 'big-pickle', name: 'Big Pickle', contextWindow: 128000, maxTokens: 32000, input: ['text'] },
+    { id: 'ling-3.0-flash-fin-free', contextWindow: 64000, maxTokens: 16000 },
+  ])
+  assert.equal(written.count, 2)
+  assert.equal(settings.__store['llm-pi-ai'].providers.opencode.models.length, 2)
+  assert.equal(settings.__store['llm-pi-ai'].providers.opencode.models[1].name, 'Ling 3.0 Flash Fin Free')
+
+  // An entry missing capacities is refused unless the caller opts in.
+  await assert.rejects(
+    () => plugin.putFreeTierModels([{ id: 'x' }]),
+    /contextWindow is required/,
+  )
+  // Emptied lists go through the Models page, not this path.
+  await assert.rejects(() => plugin.putFreeTierModels([]), /cannot be emptied/)
+  await root.fiber.dispose()
+})
+
+test('the Go tier adds adopt a model into the catalog and expose it', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context)
+  plugin.tierListing = async tierId => (tierId === 'go'
+    ? [{ id: 'brand-new-model', name: 'Brand New Model' }]
+    : [{ id: 'deepseek-v4-flash-free' }])
+
+  const result = await plugin.addTierModels('go', {
+    ids: ['brand-new-model'],
+    models: [],
+    assumeDefaults: true,
+  })
+  assert.deepEqual(result.addedIds, ['brand-new-model'])
+  assert.deepEqual(result.assumedCapacityIds, ['brand-new-model'])
+  assert.equal(result.rejected.length, 0)
+
+  // The adopted model is now part of the served catalog with the documented
+  // default capacities, since the listing discloses none.
+  const models = await plugin.listAvailableModels(plugin.current())
+  const adopted = models.find(entry => entry.id === 'brand-new-model')
+  assert.ok(adopted, 'the adopted model is in the catalog')
+  assert.equal(adopted.dynamic, true)
+  assert.equal(adopted.contextWindow, 1000000)
+  assert.equal(adopted.capacitySource, 'default')
+
+  // The capacity override is what a caller who knows better writes.
+  const better = await plugin.addTierModels('go', {
+    ids: [],
+    models: [{ id: 'brand-new-model', contextWindow: 256000, maxTokens: 65536 }],
+    assumeDefaults: false,
+  })
+  assert.deepEqual(better.skippedIds, ['brand-new-model'], 'an already-adopted id is never re-added')
+  assert.equal(plugin.current().modelCapacities['brand-new-model'].contextWindow, 256000)
+  await root.fiber.dispose()
+})
+
+test('a free-tier id offered to the Go tier is refused with the two-tier rule', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context)
+  plugin.tierListing = async tierId => (tierId === 'go'
+    ? [{ id: 'deepseek-v4-pro' }]
+    : [{ id: 'deepseek-v4-flash-free' }])
+
+  const result = await plugin.addTierModels('go', {
+    ids: ['deepseek-v4-flash-free'],
+    models: [],
+    assumeDefaults: true,
+  })
+  assert.equal(result.addedIds.length, 0)
+  assert.equal(result.rejected.length, 1)
+  assert.match(result.rejected[0].reason, /two tiers serve different ids/)
+  await root.fiber.dispose()
+})
+
+test('removing a Go-tier model narrows the catalog to custom mode', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context)
+  const before = await plugin.listAvailableModels(plugin.current())
+  assert.equal(plugin.current().modelMode, 'all')
+
+  const result = await plugin.removeTierModels('go', ['deepseek-v4-flash'])
+  assert.deepEqual(result.removedIds, ['deepseek-v4-flash'])
+  assert.equal(result.mode, 'custom')
+
+  const after = await plugin.listAvailableModels(plugin.current())
+  assert.equal(after.find(entry => entry.id === 'deepseek-v4-flash').enabled, false)
+  assert.equal(after.filter(entry => entry.enabled).length, before.length - 1)
+
+  // Removing an id the route never served is reported, not silently accepted.
+  const missing = await plugin.removeTierModels('go', ['no-such-model'])
+  assert.deepEqual(missing.notFoundIds, ['no-such-model'])
+  assert.deepEqual(missing.removedIds, [])
+  await root.fiber.dispose()
+})
+
+test('sync previews drift and applies additions only on request', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context)
+  plugin.tierListing = async tierId => (tierId === 'go'
+    ? [{ id: 'deepseek-v4-flash' }, { id: 'surprise-model' }]
+    : [])
+
+  const preview = await plugin.syncTier('go', { apply: false, pruneStale: false })
+  assert.deepEqual(preview.planAdd, ['surprise-model'])
+  assert.deepEqual(preview.appliedAdd, [])
+  assert.equal(plugin.dynamicModels.get('opencode-go'), undefined, 'a preview writes nothing')
+
+  const applied = await plugin.syncTier('go', { apply: true, pruneStale: false })
+  assert.deepEqual(applied.appliedAdd, ['surprise-model'])
+  assert.deepEqual(applied.assumedCapacityIds, ['surprise-model'])
+  await root.fiber.dispose()
+})
+
+test('refreshModels merges the live lineup and reports what was new', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context)
+  let fetched = 0
+  plugin.fetchModelsImpl = async () => {
+    fetched += 1
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { object: 'list', data: [{ id: 'deepseek-v4-flash' }, { id: 'fresh-model' }] }
+      },
+    }
+  }
+
+  const result = await plugin.refreshModels()
+  assert.equal(fetched, 1)
+  assert.equal(result.count, 2)
+  assert.deepEqual(result.added, ['fresh-model'], 'a shipped model is not "new"')
+  // The fetched lineup survives into the served catalog.
+  const models = await plugin.listAvailableModels(plugin.current())
+  assert.ok(models.some(entry => entry.id === 'fresh-model' && entry.dynamic))
+  await root.fiber.dispose()
+})
+
+/* ------------------------------------------------------------------ *
+ * Tool wiring
+ * ------------------------------------------------------------------ */
+
+test('oc_suite_status renders a full report from the live service', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, tools, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { keys: TWO_KEYS },
+    sections: { 'llm-pi-ai': freeTierSection([]) },
+  })
+  plugin.tierListing = async tierId => (tierId === 'go'
+    ? [{ id: 'deepseek-v4-flash' }]
+    : [{ id: 'big-pickle' }])
+
+  const tool = tools.tools.find(entry => entry.name === 'oc_suite_status')
+  const value = await tool.execute({}, { signal: undefined })
+  assert.equal(value.error, undefined)
+  const [block] = tool.output.render({}, value)
+  assert.equal(block.type, 'text')
+  assert.match(block.text, /Takeover: serving/)
+  assert.match(block.text, /Key pool: 2 key\(s\)/)
+  assert.match(block.text, /Session headers: ON/)
+  assert.match(block.text, /OpenCode Zen 免费档/)
+  await root.fiber.dispose()
+})
+
+test('a tool contains a service failure instead of throwing across the registry', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const root = new harness.Context()
+  const tools = makeMockTools()
+  root.provide('llm', makeMockLlms())
+  root.provide('settings', makeMockSettings({ ...BASE_CONFIG }))
+  root.provide('credentials', { resolve: async () => undefined })
+  root.provide('tools', tools)
+  await root.plugin(harness.OpenCodeSuite, {})
+
+  const poolTool = tools.tools.find(entry => entry.name === 'oc_suite_pool')
+  // An unknown action and an unknown key both come back as values, never throws.
+  const bad = await poolTool.execute({ action: 'teleport', keyId: 'acc-a' }, {})
+  assert.match(bad.error, /unknown action/)
+  const missing = await poolTool.execute({ action: 'switch', keyId: 'ghost' }, {})
+  assert.match(missing.error, /unknown key/)
+
+  // A tool whose suite is gone teaches the fix rather than crashing the turn.
+  const orphan = (await import('../tools.js')).createTools({ suite: () => undefined })
+  const statusTool = orphan.find(entry => entry.name === 'oc_suite_status')
+  const orphaned = await statusTool.execute({}, {})
+  assert.match(orphaned.error, /is unavailable; enable the dsh-opencode-suite plugin/)
+  await root.fiber.dispose()
+})
