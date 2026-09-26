@@ -10,9 +10,9 @@
  * One class-based Cordis plugin that also exposes the `opencodeSuite` Typert
  * Remote (strict-mode dispatch driven by `typert.host.js`):
  *
- *   1. Registers the `opencode-suite` settings namespace (schema + entry config
- *      as the base layer); the card writes keys and policy through the RPC
- *      surface with the settings seam's revision fencing.
+ *   1. Exposes every live field through the `opencode-suite` settings form and
+ *      writes keys and policy through the settings service, which validates the
+ *      complete Config and fences stale revisions.
  *   2. Maintains the KeyPool state machine, persisted to
  *      `$DSH_HOME/opencode-suite.state.json`.
  *   3. Owns the provider route (default `opencode-go`, taking over the
@@ -32,9 +32,9 @@
  */
 
 import z from '@deepseek-ai/schemastery'
-import { statSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { credentialRef, isCredentialKeySegment, isCredentialRefName } from '@deepseek-ai/dsh-credentials'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
@@ -49,6 +49,13 @@ import { PiAiAdapter, recordKeyFor } from '@deepseek-ai/dsh-llm-pi-ai'
 import { opencodeGoProvider } from '@earendil-works/pi-ai/providers/opencode-go'
 import { KeyPool, assertKeyList, authFaultKind } from './pool.js'
 import { UsageCache, fetchUsage } from './usage.js'
+import {
+  DEFAULT_RETENTION_DAYS,
+  DEFAULT_SESSIONS_PER_SWEEP,
+  DEFAULT_SWEEP_MAX_MS,
+  DEFAULT_WINDOW_DAYS,
+  UsageLedger,
+} from './usage-log.js'
 import {
   ASSUMED_CONTEXT_WINDOW,
   ASSUMED_MAX_TOKENS,
@@ -70,6 +77,7 @@ import {
   withDeclaredInput,
 } from './catalog.js'
 import { FreeTierError, describeRevision, readRouteApiKeyEnv, readRouteModels, writeRouteModels } from './free-tier.js'
+import { ModelWatcher } from './model-watch.js'
 import {
   DEFAULT_HEADERS,
   InjectionLog,
@@ -77,6 +85,7 @@ import {
   createSessionScope,
   installSessionHeaderFetch,
   normalizeSessionConfig,
+  observedIterable,
   scopedIterable,
   wireSessionIdOf,
 } from './session.js'
@@ -93,6 +102,13 @@ const DEFAULT_MODELS_BASE_URL = 'https://opencode.ai/zen/go/v1/models'
 const DEFAULT_FREE_MODELS_BASE_URL = 'https://opencode.ai/zen/v1/models'
 const STATE_FILE = 'opencode-suite.state.json'
 const MODELS_CACHE_FILE = 'opencode-suite.models.json'
+const USAGE_STATE_FILE = 'opencode-suite.usage.json'
+// The live source lives in memory between turns, so it is flushed on a timer
+// and on dispose: a host restart must not erase the day's totals. Writing is
+// throttled because a busy turn folds several calls a second.
+const USAGE_FLUSH_MS = 5000
+const MODEL_WATCH_FILE = 'opencode-suite.watched.json'
+const DEFAULT_MODEL_WATCH_MS = 900000
 const DEFAULT_USAGE_REFRESH_MS = 30000
 const DEFAULT_TIMEOUT_MS = 15000
 const USAGE_CACHE_TTL_MS = 15000
@@ -110,6 +126,7 @@ const DEFAULT_REQUEST_IMAGE_MAX_BYTES = 1024 * 1024
 /** The default bounded transient-retry code set, plus quota for pool rotation. */
 const BASE_RETRYABLE_CODES = ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT']
 
+/** One pooled key: an id, a display label, and the credential that holds its secret. */
 const keyEntry = z.object({
   id: z.string(),
   label: z.string(),
@@ -138,17 +155,25 @@ const sessionHeadersSchema = z.object({
   nanoidAlphabet: z.union(['alphanumeric', 'urlsafe']).default('alphanumeric'),
 }).default({})
 
+/** Every field is live: a settings form write reaches the running pool, route,
+ * and session-header injector without remounting this entry. */
 export const Config = z.object({
-  route: z.union([DEFAULT_ROUTE, ALT_ROUTE]).default(DEFAULT_ROUTE),
-  keys: z.array(keyEntry).default([]),
-  preemptAtPercent: z.number().min(0).max(100).default(100),
+  route: z.union([DEFAULT_ROUTE, ALT_ROUTE]).default(DEFAULT_ROUTE).volatile(),
+  // A key list is only well-formed as a whole (unique ids and reference names),
+  // which no per-field schema states; the callback refuses a write that
+  // duplicates or malforms an entry before it persists.
+  keys: z.transform(z.array(keyEntry), value => {
+    assertKeyList(value)
+    return value
+  }).default([]).volatile(),
+  preemptAtPercent: z.number().min(0).max(100).default(100).volatile(),
   // Consecutive non-quota failures (rate limit / server / timeout) after which
   // the pool rotates away from a key; 0 disables the rule.
-  switchAfterConsecutiveFailures: z.number().min(0).max(20).default(0),
+  switchAfterConsecutiveFailures: z.number().min(0).max(20).default(0).volatile(),
   // Which models the pooled route exposes. 'all' follows the catalog (new
   // models appear automatically); 'custom' exposes exactly `models`.
-  modelMode: z.union(['all', 'custom']).default('all'),
-  models: z.array(z.string()).default([]),
+  modelMode: z.union(['all', 'custom']).default('all').volatile(),
+  models: z.array(z.string()).default([]).volatile(),
   // Model ids the pooled route declares to accept image input. The Go catalog
   // declares no capability for its DeepSeek rows — the models endpoint
   // publishes none at all — so a gateway model that accepts images reads as
@@ -156,23 +181,53 @@ export const Config = z.object({
   // refused for it. A descriptor the catalog already declares image-capable
   // needs no entry. An id the route does not serve is inert, which keeps a
   // fetched-then-removed model harmless.
-  imageModels: z.array(z.string()).default([]),
+  imageModels: z.array(z.string()).default([]).volatile(),
   // Real capacities for synthesized (fetched) models, keyed by model id. The
   // listing endpoint discloses ids only, so an adopted model otherwise rides
   // the documented defaults; a card or tool that learns better numbers writes
   // them here.
-  modelCapacities: z.dict(capacityEntry).default({}),
-  usageBaseUrl: z.string().default(DEFAULT_USAGE_BASE_URL),
-  modelsBaseUrl: z.string().default(DEFAULT_MODELS_BASE_URL),
-  freeModelsBaseUrl: z.string().default(DEFAULT_FREE_MODELS_BASE_URL),
-  usageRefreshMs: z.number().min(5000).max(300000).default(DEFAULT_USAGE_REFRESH_MS),
-  timeoutMs: z.number().min(1000).max(120000).default(DEFAULT_TIMEOUT_MS),
-  sessionHeaders: sessionHeadersSchema,
+  modelCapacities: z.dict(capacityEntry).default({}).volatile(),
+  usageBaseUrl: z.string().default(DEFAULT_USAGE_BASE_URL).volatile(),
+  modelsBaseUrl: z.string().default(DEFAULT_MODELS_BASE_URL).volatile(),
+  freeModelsBaseUrl: z.string().default(DEFAULT_FREE_MODELS_BASE_URL).volatile(),
+  usageRefreshMs: z.number().min(5000).max(300000).default(DEFAULT_USAGE_REFRESH_MS).volatile(),
+  timeoutMs: z.number().min(1000).max(120000).default(DEFAULT_TIMEOUT_MS).volatile(),
+  // Local token accounting (see usage-log.js). The usage endpoint reports plan
+  // windows per key and never a model breakdown, so this is where "which model
+  // burns the window" comes from.
+  usageLogEnabled: z.boolean().default(true).volatile(),
+  // Where the numbers come from. 'live' counts what this host streams while the
+  // plugin is on: instant, no reads, no history from before it was enabled.
+  // 'log' folds the durable session log instead: full history, but the first
+  // pass over a large store takes minutes and is spread over refreshes. One
+  // call seen by both would be counted twice, so the sources are exclusive.
+  usageLogSource: z.union(['live', 'log']).default('live').volatile(),
+  // Days the card and the tool report. Storage keeps the retention horizon
+  // regardless, so widening the window costs no re-scan.
+  usageLogWindowDays: z.number().min(1).max(365).default(DEFAULT_WINDOW_DAYS).volatile(),
+  usageLogRetentionDays: z.number().min(1).max(3650).default(DEFAULT_RETENTION_DAYS).volatile(),
+  // How many changed sessions one refresh may open, and how long it may spend
+  // on them. Both bound the same thing: a card load or a tool call must answer
+  // quickly on a store with thousands of sessions. Whatever is left stays
+  // queued and `sweep.complete` says so.
+  usageLogSessionsPerSweep: z.number().min(1).max(5000).default(DEFAULT_SESSIONS_PER_SWEEP).volatile(),
+  usageLogSweepMaxMs: z.number().min(200).max(120000).default(DEFAULT_SWEEP_MAX_MS).volatile(),
+  // Watch both tiers' online listings and report what is new or gone, so a
+  // model that ships overnight does not wait for a card poll to be noticed.
+  modelWatchEnabled: z.boolean().default(true).volatile(),
+  modelWatchIntervalMs: z.number().min(300000).max(86400000).default(DEFAULT_MODEL_WATCH_MS).volatile(),
+  sessionHeaders: sessionHeadersSchema.volatile(),
 })
 
-/** Cross-field constraints the schema cannot express; refuses the write. */
-function validateSection(value) {
-  assertKeyList(value.keys ?? [])
+/** Unwrap this entry's Config references into plain values for one operation.
+ * @param config Parsed plugin Config whose fields the schema declared volatile.
+ * @returns The live section snapshot.
+ */
+function plainSection(config) {
+  return Object.fromEntries(Object.entries(config).map(([key, value]) => [
+    key,
+    typeof value === 'object' && value !== null && typeof value.get === 'function' ? value.get() : value,
+  ]))
 }
 
 /* ------------------------------------------------------------------ *
@@ -451,19 +506,18 @@ class OpenCodeSuiteAdapter extends LlmAdapter {
  * dispatch the `opencodeSuite` invocations declared in typert.host.js.
  */
 export class OpenCodeSuite extends TypertRemoteService {
-  static inject = ['llm', 'credentials', 'settings', 'tools']
+  static inject = ['llm', 'credentials', 'tools']
   static Config = Config
 
   constructor(ctx, config) {
     super(ctx, 'opencodeSuite')
     this.ctx = ctx
     this.logger = ctx.logger ?? console
-
-    this.scope = ctx.settings.register(NS, Config, {
-      base: config ?? {},
-      validate: validateSection,
-    })
-    this.current = () => this.scope.get()
+    this.config = config ?? {}
+    this.current = () => plainSection(this.config)
+    // The card owns this entry's page, so the schema-derived page stays off;
+    // an optional child keeps the plugin bootable without the settings service.
+    ctx.inject(['settings'], (child) => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)) })
     this.auth = poolAuth(ctx)
 
     this.pool = new KeyPool({
@@ -471,6 +525,21 @@ export class OpenCodeSuite extends TypertRemoteService {
       reviveThresholdPercent: REVIVE_THRESHOLD_PERCENT,
     })
     this.usageCache = new UsageCache({ ttlMs: USAGE_CACHE_TTL_MS })
+    // Local token accounting from the session log. The ledger holds no state the
+    // host owns, so it is built whether or not the persistence seam exists and
+    // simply reports why it is empty when it does not.
+    this.usageLedger = new UsageLedger()
+    // The live source is in-memory by nature, so it is seeded from its own
+    // state file. The log source is never seeded: those numbers are in the
+    // session logs, and restoring them here would count them twice.
+    this.usageStatePath = dshHomePath(USAGE_STATE_FILE)
+    // New-model news: the listing is polled on a timer, and what it finds is
+    // remembered so the card can say "new since" instead of repeating itself.
+    this.modelWatcher = new ModelWatcher({ statePath: dshHomePath(MODEL_WATCH_FILE) })
+    this.modelWatchTimer = null
+    this.modelWatchRestarts = 0
+    this.usageFlushTimer = null
+    if (this.current().usageLogSource !== 'log') this.restoreUsageState()
     // The listing cache uses the same TTL-with-in-flight-dedupe shape: the card
     // polls both tiers while open and the tools ask again on every call.
     this.listingCache = new UsageCache({ ttlMs: LISTING_CACHE_TTL_MS })
@@ -498,7 +567,7 @@ export class OpenCodeSuite extends TypertRemoteService {
     this.wireToken = raw => wireSessionIdOf(raw, this.sessionConfig())
 
     this.applyConfig()
-    this.scope.watch(() => this.applyConfig())
+    ctx.on('loader/volatile-update', () => { this.applyConfig() })
 
     // ---- session-header wiring (installed once; reads live config) --------
     ctx.on('llm/stream', (options, next) => this.scopeStream(options, next))
@@ -518,6 +587,9 @@ export class OpenCodeSuite extends TypertRemoteService {
     // register() binds each tool to this plugin's fiber and returns its
     // disposer, so stop/uninstall removes all of them without bookkeeping here.
     for (const tool of createTools({ suite: () => this })) ctx.tools.register(tool)
+
+    ctx.effect(() => () => this.flushUsageState(), 'opencode-suite: flush local usage state')
+    ctx.effect(() => this.startModelWatch(), 'opencode-suite: model watch')
 
     this.offAdaptersUpdated = ctx.on('llm/adapters-updated', () => {
       if (this.servingRoute === null) this.tryRegister()
@@ -554,6 +626,127 @@ export class OpenCodeSuite extends TypertRemoteService {
    * only wire effect is session request headers.
    */
   scopeStream(options, next) {
+    const iterable = this.scopeStreamSession(options, next)
+    const usageCfg = this.current()
+    if (usageCfg.usageLogEnabled === false || usageCfg.usageLogSource !== 'live') return iterable
+    // Account on the same interception that scopes headers: the two compose,
+    // and the observer reads only `{type:'usage'}` chunks.
+    const provider = options.provider
+    const model = options.model
+    const ledger = this.usageLedger
+    return observedIterable(iterable, (usage) => {
+      if (ledger.record({ provider, model, usage })) this.scheduleUsageFlush()
+    })
+  }
+
+  /** The watcher's wire report, read against the live config. */
+  modelWatchReport() {
+    const cfg = this.current()
+    return this.modelWatcher.report({
+      enabled: cfg.modelWatchEnabled !== false,
+      intervalMs: cfg.modelWatchIntervalMs,
+    })
+  }
+
+  /**
+   * Start (or restart) the listing watch on the configured interval.
+   * @returns a disposer that stops it.
+   */
+  startModelWatch() {
+    this.stopModelWatch()
+    const cfg = this.current()
+    if (cfg.modelWatchEnabled === false) return () => {}
+    const timer = setInterval(() => { void this.checkModels() }, cfg.modelWatchIntervalMs)
+    timer.unref?.()
+    this.modelWatchTimer = timer
+    return () => this.stopModelWatch()
+  }
+
+  stopModelWatch() {
+    if (this.modelWatchTimer !== null) {
+      clearInterval(this.modelWatchTimer)
+      this.modelWatchTimer = null
+    }
+  }
+
+  /**
+   * One watch pass over both tiers.
+   *
+   * A pass that finds something says so once, in the host log, so a headless
+   * run learns about it too — the card is only one of the readers.
+   * @param {object} [options]
+   * @param {boolean} [options.fresh] - bypass the listing cache for this pass.
+   * @returns {Promise<{notices: string[]}>} the ids that were new this pass.
+   */
+  async checkModels({ fresh = false } = {}) {
+    const { notices } = await this.modelWatcher.check(async (tierId) => {
+      const listing = await this.tierListing(tierId, undefined, { fresh })
+      return listing.map(entry => entry.id)
+    })
+    if (notices.length > 0) {
+      this.logger?.info?.(`opencode-suite: new online models: ${notices.join(', ')}`)
+    }
+    return { notices, pendingTotal: this.modelWatcher.pendingCount() }
+  }
+
+  /**
+   * Dismiss one tier's news. The seen set is kept, so the dismissed ids are
+   * not announced again until they leave and come back.
+   * @param tierId - `go` or `free`.
+   * @returns {number} how many pending ids were dropped.
+   */
+  dismissModelNews(tierId) {
+    return this.modelWatcher.acknowledge(tierId)
+  }
+
+  /** Read the persisted live counters back in, if any survive. */
+  restoreUsageState() {
+    try {
+      this.usageLedger.restore(JSON.parse(readFileSync(this.usageStatePath, 'utf8')))
+    } catch {
+      // Missing or corrupt state file: the card starts from what this run sees.
+    }
+  }
+
+  /** Fold the live counters into the state file soon, not on every call. */
+  scheduleUsageFlush() {
+    if (this.usageFlushTimer !== null) return
+    this.usageFlushTimer = setTimeout(() => {
+      this.usageFlushTimer = null
+      this.flushUsageState()
+    }, USAGE_FLUSH_MS)
+    this.usageFlushTimer.unref?.()
+  }
+
+  /**
+   * Write the live counters now (best-effort atomic write).
+   *
+   * Losing the file costs a re-count from the next restart; it never costs the
+   * pool, the route, or a turn, so a write failure is swallowed rather than
+   * surfaced.
+   */
+  flushUsageState() {
+    if (this.usageFlushTimer !== null) {
+      clearTimeout(this.usageFlushTimer)
+      this.usageFlushTimer = null
+    }
+    try {
+      mkdirSync(dirname(this.usageStatePath), { recursive: true })
+      const tmp = `${this.usageStatePath}.${process.pid}.tmp`
+      writeFileSync(tmp, JSON.stringify(this.usageLedger.serialize(), null, 2))
+      renameSync(tmp, this.usageStatePath)
+    } catch {
+      // Best effort: the counters stay in memory and flush on the next call.
+    }
+  }
+
+  /**
+   * Bind one `llm/stream` call to its conversation session id.
+   * @param options - the stream request.
+   * @param next - the downstream continuation.
+   * @returns the downstream result, unchanged.
+   */
+  scopeStreamSession(options, next) {
     const cfg = this.sessionConfig()
     if (!cfg.enabled) return next()
     let sessionId = options.sessionId
@@ -577,6 +770,17 @@ export class OpenCodeSuite extends TypertRemoteService {
   }
 
   // ---- configuration & registration ---------------------------------------
+
+  /**
+   * Persist volatile Config fields through the settings service, which validates
+   * the complete Config and commits them into this instance's live references.
+   * @param {object} patch - Fields to merge; unlisted fields keep their values.
+   */
+  async writeSection(patch) {
+    const settings = this.ctx.get('settings')
+    if (!settings) throw new FreeTierError('the settings service is unavailable', 'NO_SETTINGS')
+    await settings.update(NS, patch)
+  }
 
   applyConfig() {
     const cfg = this.current()
@@ -1146,7 +1350,7 @@ export class OpenCodeSuite extends TypertRemoteService {
     ])]
     const patch = { modelCapacities: capacities }
     if (JSON.stringify(images) !== JSON.stringify(cfg.imageModels ?? [])) patch.imageModels = images
-    await this.scope.update(patch)
+    await this.writeSection(patch)
     const mode = this.current().modelMode
     this.announceAdapterChange()
 
@@ -1202,7 +1406,7 @@ export class OpenCodeSuite extends TypertRemoteService {
         'EMPTY_SELECTION',
       )
     }
-    await this.scope.update({ modelMode: 'custom', models: keep })
+    await this.writeSection({ modelMode: 'custom', models: keep })
     this.announceAdapterChange()
     return { tier: tierId, route: tier.route, removedIds, notFoundIds, mode: 'custom', revision: undefined }
   }
@@ -1367,6 +1571,7 @@ export class OpenCodeSuite extends TypertRemoteService {
         }
       }),
       freeTier,
+      modelWatch: this.modelWatchReport(),
       sessionHeaders: {
         enabled: sessionCfg.enabled,
         providers: [...sessionCfg.providers],
@@ -1383,6 +1588,60 @@ export class OpenCodeSuite extends TypertRemoteService {
         injected: this.injectionLog.entries.length,
         recent: this.injectionLog.list(),
       },
+    }
+  }
+
+  /**
+   * Per-day, per-model token accounting folded from the session log, for the
+   * card and the agent tool.
+   *
+   * A refresh sweeps the changed sessions under the configured budget and then
+   * reports the requested window, so the answer carries its own completeness:
+   * `sweep.complete` false means more sessions are still queued, not that the
+   * numbers are wrong.
+   * @param request - `{ days? }`, the window to report; defaults to the configured one.
+   * @returns the window payload, with `error` naming why it is empty.
+   */
+  async usageBreakdown({ days } = {}) {
+    const cfg = this.current()
+    const source = cfg.usageLogSource === 'log' ? 'log' : 'live'
+    const retention = Number.isSafeInteger(cfg.usageLogRetentionDays) && cfg.usageLogRetentionDays > 0
+      ? cfg.usageLogRetentionDays
+      : DEFAULT_RETENTION_DAYS
+    const configured = Number.isSafeInteger(cfg.usageLogWindowDays) && cfg.usageLogWindowDays > 0
+      ? cfg.usageLogWindowDays
+      : DEFAULT_WINDOW_DAYS
+    const windowDays = Number.isSafeInteger(days) && days > 0 ? Math.min(days, retention) : configured
+    const empty = this.usageLedger.snapshot({ windowDays, retentionDays: retention })
+    if (cfg.usageLogEnabled === false) {
+      return { ...empty, source, enabled: false, error: 'local token accounting is disabled (usageLogEnabled)' }
+    }
+    if (source === 'live') {
+      return { ...empty, source, enabled: true, error: null }
+    }
+    const persistence = this.ctx.get('sessionPersistence')
+    if (persistence === undefined || persistence === null) {
+      return { ...empty, source, enabled: true, error: 'the sessionPersistence service is unavailable in this profile' }
+    }
+    try {
+      await this.usageLedger.refresh(persistence, {
+        sessionsPerSweep: cfg.usageLogSessionsPerSweep,
+        maxMs: cfg.usageLogSweepMaxMs,
+        retentionDays: retention,
+      })
+    } catch (error) {
+      return {
+        ...this.usageLedger.snapshot({ windowDays, retentionDays: retention }),
+        source,
+        enabled: true,
+        error: messageOf(error),
+      }
+    }
+    return {
+      ...this.usageLedger.snapshot({ windowDays, retentionDays: retention }),
+      source,
+      enabled: true,
+      error: null,
     }
   }
 
@@ -1443,7 +1702,7 @@ export class OpenCodeSuite extends TypertRemoteService {
 
   async putKeys(keys) {
     assertKeyList(keys)
-    await this.scope.update({ keys })
+    await this.writeSection({ keys })
     return true
   }
 
@@ -1521,7 +1780,7 @@ export class OpenCodeSuite extends TypertRemoteService {
         && (!Array.isArray(effective.models) || effective.models.length === 0)) {
       throw new Error('custom model selection needs at least one model — pick models or use modelMode "all"')
     }
-    await this.scope.update(patch)
+    await this.writeSection(patch)
     return true
   }
 
@@ -1570,7 +1829,7 @@ export class OpenCodeSuite extends TypertRemoteService {
     // function the runtime reads through — the card cannot smuggle in a header
     // name the injector would silently drop.
     const normalized = normalizeSessionConfig(candidate)
-    await this.scope.update({ sessionHeaders: normalized })
+    await this.writeSection({ sessionHeaders: normalized })
     return true
   }
 

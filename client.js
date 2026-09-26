@@ -210,6 +210,52 @@ window.__ModuleLoader__.load({
       sessionLengthInvalid: '短码长度必须是 4 到 32 的整数',
       sessionExtraInvalid: '额外固定头必须是 name: value 形式',
       sessionEnvNote: '构建期配置项（sessionIdEnv、注入开关等）只读，不在本页修改。',
+
+      // ── 本地用量（按天 × 模型） ────────────────────────────────
+      usageTitle: '本地用量（按天 × 模型）',
+      usageHint: '从本机会话日志折叠出来的 token 统计。Go 用量端点只按 Key 给出「额度窗口用了百分之多少」，既没有 token 数也没有模型拆分，所以「哪个模型费额度」只能从这里回答。',
+      usageEnable: '统计本地用量',
+      usageDisabled: '已关闭：卡片不读会话日志，oc_usage_models 工具也返回空。打开后立刻开始统计已有日志。',
+      usageWindow: '统计窗口',
+      usageDay1: '今天',
+      usageDay7: '近 7 天',
+      usageDay30: '近 30 天',
+      usageDay90: '近 90 天',
+      usageCalls: '调用',
+      usageInput: '输入',
+      usageCache: '缓存读',
+      usageOutput: '输出',
+      usageTotal: '合计',
+      usageShare: '占比',
+      usageModelCol: '模型',
+      usageDateCol: '日期',
+      usageCacheShare: '缓存读占全部 token 的 {pct}。订阅制下烧掉窗口的是这一块，不是输出量。',
+      usageEmpty: '这个窗口里没有任何模型调用。',
+      usageEmptyHint: '新 profile、或窗口早于第一次调用时就是这样。发一次消息再点刷新就有了。',
+      usageSource: '数据来源',
+      newsTitle: '模型上新提醒',
+      newsHint: '后台每 {minutes} 分钟核对一次两档线上列表。下面是还没处理的变动。',
+      newsNew: '新上线',
+      newsGone: '已下架',
+      newsSince: '首次发现 {when}',
+      newsNone: '没有待处理的变动。',
+      newsFetchGo: '拉取到 Go 档',
+      newsAdoptFree: '上架到免费档',
+      newsDismiss: '知道了',
+      newsCheck: '立即核对',
+      newsChecked: '核对于 {when}',
+      newsOff: '已关闭：不后台核对，列表变化只在你打开本页时显示。',
+      newsFailed: '核对失败：{error}',
+      usageSourcePickLive: '实时',
+      usageSourcePickLog: '会话日志',
+      usageSourceLive: '实时（统计本进程流过的请求）',
+      usageSourceLog: '会话日志（含启用前的历史）',
+      usageSourceLiveEmpty: '启用后还没有走过模型请求。发一条消息，再点重试。',
+      usageSourceLogEmpty: '这个窗口里没有模型调用。发一条消息，或换更长的窗口再看。',
+      usageSweep: '已扫描 {sessions} 个会话，本次折叠 {processed} 个，{failed} 个读不了。',
+      usageSweepPending: '还有 {pending} 个会话排队，每刷新一次扫一批。',
+      usageUpdated: '统计于',
+      usageFailed: '读取会话日志失败：{error}',
     }
 
     const en = {
@@ -390,6 +436,52 @@ window.__ModuleLoader__.load({
       sessionLengthInvalid: 'digest length must be an integer 4..32',
       sessionExtraInvalid: 'extra fixed headers must be name: value lines',
       sessionEnvNote: 'Build-time settings (sessionIdEnv, the injection switch, …) are read-only and not edited here.',
+
+      // ── Local usage (day × model) ──────────────────────────────
+      usageTitle: 'Local usage (day × model)',
+      usageHint: 'Token totals folded from this host\'s session log. The Go usage endpoint reports only how much of each plan window a KEY has spent — no token counts, no model split — so "which model burns the window" can only be answered here.',
+      usageEnable: 'Account local usage',
+      usageDisabled: 'Off: the card does not read the session log and oc_usage_models returns nothing. Turning it on accounts the logs already on disk.',
+      usageWindow: 'Window',
+      usageDay1: 'Today',
+      usageDay7: '7 days',
+      usageDay30: '30 days',
+      usageDay90: '90 days',
+      usageCalls: 'calls',
+      usageInput: 'input',
+      usageCache: 'cache read',
+      usageOutput: 'output',
+      usageTotal: 'total',
+      usageShare: 'share',
+      usageModelCol: 'model',
+      usageDateCol: 'date',
+      usageCacheShare: 'Cache reads are {pct} of every token in this window. On a subscription that share, not output volume, is what burns the window.',
+      usageEmpty: 'No model calls in this window.',
+      usageEmptyHint: 'That is what a fresh profile, or a window that predates the first call, looks like. Send a message and refresh.',
+      usageSource: 'Source',
+      newsTitle: 'New models',
+      newsHint: 'Both tiers\' online listings are checked every {minutes} minutes in the background. Here is what is still unhandled.',
+      newsNew: 'new online',
+      newsGone: 'delisted',
+      newsSince: 'first seen {when}',
+      newsNone: 'Nothing unhandled.',
+      newsFetchGo: 'Fetch into the Go tier',
+      newsAdoptFree: 'Adopt into the free tier',
+      newsDismiss: 'Dismiss',
+      newsCheck: 'Check now',
+      newsChecked: 'checked {when}',
+      newsOff: 'Off: no background check, so listing changes only show while this page is open.',
+      newsFailed: 'Check failed: {error}',
+      usageSourcePickLive: 'live',
+      usageSourcePickLog: 'log',
+      usageSourceLive: 'live (what this host streamed)',
+      usageSourceLog: 'session log (includes history from before it was on)',
+      usageSourceLiveEmpty: 'No model request has gone through yet. Send one, then retry.',
+      usageSourceLogEmpty: 'No model call in this window. Send one, or widen the window.',
+      usageSweep: 'Scanned {sessions} sessions, folded {processed} this sweep, {failed} unreadable.',
+      usageSweepPending: '{pending} sessions still queued; each refresh folds one batch.',
+      usageUpdated: 'accounted at',
+      usageFailed: 'Reading the session log failed: {error}',
     }
 
     /* ------------------------------------------------------------------ *
@@ -402,7 +494,11 @@ window.__ModuleLoader__.load({
     // strict — the generated client Remote binder rejects src-json results at
     // mount time ("has no strict codec").
     const passthrough = () => ({ parse(value) { return value } })
-    const strict = () => ({ mode: 'strict', typeSymbol: 'json', schema: passthrough() })
+    // 0.1.7 起 strict codec 是「工厂」：create() 必须返回 schema 本体
+    // （客户端注册表用 `record.value ??= record.create()` 取它再做校验），
+    // 只带 schema 的旧形状会被判 `has no create() factory` 并抛出，
+    // 使 $mount 的 promise 永远不 resolve、页面卡在「加载失败」。
+    const strict = () => ({ mode: 'strict', typeSymbol: 'json', create: () => passthrough(), schema: passthrough() })
     const DESCRIPTOR = (method, parameters) => ({
       id: `dsh-opencode-suite#opencodeSuite/${method}`,
       service: 'opencodeSuite',
@@ -413,7 +509,7 @@ window.__ModuleLoader__.load({
         name: p,
         wire: p,
         source: 'json',
-        codec: { mode: 'strict', typeSymbol: 'json', schema: passthrough() },
+        codec: { mode: 'strict', typeSymbol: 'json', create: () => passthrough(), schema: passthrough() },
       })),
       result: strict(),
     })
@@ -425,6 +521,9 @@ window.__ModuleLoader__.load({
       package: 'dsh-opencode-suite',
       descriptors: [
         DESCRIPTOR('status', []),
+        DESCRIPTOR('usageBreakdown', ['days']),
+        DESCRIPTOR('checkModels', []),
+        DESCRIPTOR('dismissModelNews', ['tier']),
         DESCRIPTOR('takeOverState', []),
         DESCRIPTOR('setActive', ['id']),
         DESCRIPTOR('setDisabled', ['id', 'on']),
@@ -486,6 +585,15 @@ window.__ModuleLoader__.load({
       table: { width: '100%', borderCollapse: 'collapse', fontSize: 12 },
       th: { textAlign: 'left', color: 'var(--dsw-alias-label-tertiary)', fontWeight: 600, padding: '4px 8px 4px 0', borderBottom: '1px solid var(--dsw-alias-border-l2)' },
       td: { color: 'var(--dsw-alias-label-secondary)', padding: '4px 8px 4px 0', borderBottom: '1px solid var(--dsw-alias-border-l1, var(--dsw-alias-border-l2))', verticalAlign: 'top', wordBreak: 'break-all' },
+      tdNum: { color: 'var(--dsw-alias-label-secondary)', padding: '4px 8px 4px 0', borderBottom: '1px solid var(--dsw-alias-border-l1, var(--dsw-alias-border-l2))', textAlign: 'right', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' },
+      dayStrip: { display: 'flex', alignItems: 'flex-end', gap: 3, height: 56 },
+      dayCell: { display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', alignItems: 'center', gap: 3, flex: 1, minWidth: 0 },
+      dayBar: { width: '100%', borderRadius: 3, background: 'var(--dsw-alias-state-business-primary)', minHeight: 2 },
+      dayBarEmpty: { width: '100%', borderRadius: 3, background: 'var(--dsw-alias-bg-layer-1)', minHeight: 2 },
+      dayLabel: { fontSize: 10, color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap' },
+      shareCell: { display: 'flex', alignItems: 'center', gap: 6 },
+      shareTrack: { width: 72, height: 6, borderRadius: 3, background: 'var(--dsw-alias-bg-layer-1)', overflow: 'hidden', flex: 'none' },
+      shareFill: { height: '100%', borderRadius: 3, background: 'var(--dsw-alias-state-business-primary)' },
       divider: { height: 1, background: 'var(--dsw-alias-border-l2)', margin: '2px 0' },
     }
 
@@ -1566,6 +1674,251 @@ window.__ModuleLoader__.load({
     }
 
     /* ------------------------------------------------------------------ *
+     * Local usage (day × model)
+     * ------------------------------------------------------------------ */
+
+    const USAGE_WINDOWS = [1, 7, 30, 90]
+
+    function usageWindowLabel(days, t) {
+      if (days === 1) return t('usageDay1')
+      if (days === 7) return t('usageDay7')
+      if (days === 30) return t('usageDay30')
+      return t('usageDay90')
+    }
+
+    function UsageShareCell(props) {
+      const { share } = props
+      const percent = Math.max(0, Math.min(1, typeof share === 'number' && Number.isFinite(share) ? share : 0))
+      return React.createElement('td', { style: styles.tdNum },
+        React.createElement('div', { style: styles.shareCell },
+          React.createElement('div', { style: styles.shareTrack },
+            React.createElement('div', { style: { ...styles.shareFill, width: (percent * 100).toFixed(1) + '%' } })),
+          React.createElement('span', null, (percent * 100).toFixed(1) + '%'),
+        ),
+      )
+    }
+
+    function ModelNewsCard(props) {
+      const { t, watch, busy, onCheck, onAdopt, onDismiss, checking } = props
+      const enabled = watch ? watch.enabled !== false : true
+      const tiers = watch && watch.tiers ? watch.tiers : { go: { pending: [], gone: [] }, free: { pending: [], gone: [] } }
+      const rows = ['go', 'free'].map(tierId => ({
+        tierId,
+        label: tierId === 'go' ? t('poolTitle') : t('freeTitle'),
+        pending: Array.isArray(tiers[tierId]?.pending) ? tiers[tierId].pending : [],
+        gone: Array.isArray(tiers[tierId]?.gone) ? tiers[tierId].gone : [],
+      })).filter(row => row.pending.length > 0 || row.gone.length > 0)
+      const when = value => (value ? new Date(value).toLocaleString() : '')
+
+      return React.createElement('div', { style: { ...styles.card, ...(rows.length > 0 ? styles.bannerWarn : null) } },
+        React.createElement('div', { style: styles.cardHead },
+          React.createElement('h3', { style: styles.cardName }, t('newsTitle')),
+          React.createElement('div', { style: styles.row },
+            React.createElement('button', {
+              style: styles.button,
+              disabled: checking === true || !enabled,
+              onClick: onCheck,
+            }, checking === true ? t('refreshing') : t('newsCheck')),
+            watch && watch.lastCheckedAt
+              ? React.createElement('span', { style: styles.dayLabel },
+                  t('newsChecked').replace('{when}', when(watch.lastCheckedAt)))
+              : null,
+          ),
+        ),
+        React.createElement('p', { style: styles.cardMeta },
+          enabled
+            ? t('newsHint').replace('{minutes}', String(Math.round((watch?.intervalMs ?? 0) / 60000)))
+            : t('newsOff')),
+        watch && watch.error
+          ? React.createElement('p', { style: styles.error }, t('newsFailed').replace('{error}', watch.error))
+          : null,
+        rows.length === 0
+          ? React.createElement('p', { style: styles.hint }, t('newsNone'))
+          : rows.map(row => React.createElement('div', { key: row.tierId, style: styles.barRow },
+              React.createElement('div', { style: styles.barHead },
+                React.createElement('span', { style: { fontWeight: 600 } }, `${row.label} · ${t('newsNew')} ${row.pending.length}`),
+                React.createElement('span', null, `${t('newsGone')} ${row.gone.length}`),
+              ),
+              row.pending.map(item => React.createElement('div', { key: `${row.tierId}-${item.id}`, style: styles.fieldRow },
+                React.createElement('code', null, item.id),
+                React.createElement('span', { style: styles.dayLabel },
+                  t('newsSince').replace('{when}', when(item.firstSeenAt))),
+              )),
+              row.gone.map(item => React.createElement('div', { key: `${row.tierId}-gone-${item.id}`, style: styles.fieldRow },
+                React.createElement('code', { style: { textDecoration: 'line-through', opacity: 0.7 } }, item.id),
+              )),
+              React.createElement('div', { style: styles.actions },
+                React.createElement('button', {
+                  style: styles.button,
+                  disabled: busy !== null && busy !== undefined,
+                  onClick: () => onAdopt(row.tierId, row.pending.map(item => item.id)),
+                }, row.tierId === 'go' ? t('newsFetchGo') : t('newsAdoptFree')),
+                React.createElement('button', {
+                  style: styles.button,
+                  disabled: busy !== null && busy !== undefined,
+                  onClick: () => onDismiss(row.tierId),
+                }, t('newsDismiss')),
+              ),
+            )),
+      )
+    }
+
+    function UsageBreakdownCard(props) {
+      const { t, data, error, loading, windowDays, setWindowDays, onRefresh, onToggle, onSource, busy } = props
+      const enabled = data ? data.enabled !== false : true
+      const source = data && data.source === 'log' ? 'log' : 'live'
+      const totals = data && data.totals ? data.totals : null
+      const models = data && Array.isArray(data.models) ? data.models : []
+      const days = data && Array.isArray(data.days) ? data.days : []
+      const sweep = data && data.sweep ? data.sweep : null
+      const peak = days.reduce((max, day) => (day.total > max ? day.total : max), 0)
+      const cacheShare = totals && totals.total > 0 ? (totals.cacheRead / totals.total) * 100 : 0
+
+      return React.createElement('div', { style: styles.card },
+        React.createElement('div', { style: styles.cardHead },
+          React.createElement('h3', { style: styles.cardName }, t('usageTitle')),
+          React.createElement('div', { style: styles.row },
+            React.createElement('label', { style: styles.fieldRow },
+              React.createElement('input', {
+                type: 'checkbox',
+                style: styles.check,
+                checked: enabled,
+                disabled: busy !== null && busy !== undefined,
+                onChange: () => onToggle(!enabled),
+              }),
+              t('usageEnable'),
+            ),
+            // The two sources are exclusive, so this writes the same field the
+            // service reads; a switch restarts the count from the new source.
+            React.createElement('button', {
+              style: { ...styles.button, ...(source === 'live' ? styles.buttonPrimary : {}) },
+              disabled: !enabled || loading,
+              onClick: () => onSource('live'),
+            }, t('usageSourcePickLive')),
+            React.createElement('button', {
+              style: { ...styles.button, ...(source === 'log' ? styles.buttonPrimary : {}) },
+              disabled: !enabled || loading,
+              onClick: () => onSource('log'),
+            }, t('usageSourcePickLog')),
+          ),
+        ),
+        React.createElement('p', { style: styles.cardMeta }, t('usageHint')),
+
+        enabled
+          ? React.createElement(React.Fragment, null,
+              React.createElement('div', { style: styles.actions },
+                React.createElement('span', { style: styles.hint }, t('usageWindow')),
+                USAGE_WINDOWS.map(days => React.createElement('button', {
+                  key: days,
+                  style: { ...styles.button, ...(windowDays === days ? styles.buttonPrimary : {}) },
+                  onClick: () => setWindowDays(days),
+                }, usageWindowLabel(days, t))),
+                React.createElement('button', {
+                  style: styles.button,
+                  disabled: loading,
+                  onClick: onRefresh,
+                }, loading ? t('refreshing') : t('refresh')),
+              ),
+
+              error
+                ? React.createElement('p', { style: styles.error }, t('usageFailed').replace('{error}', error))
+                : null,
+
+              totals
+                ? React.createElement('p', { style: styles.hint },
+                    `${t('usageCalls')} ${fmtNumber(totals.calls)}`
+                    + ` · ${t('usageTotal')} ${fmtNumber(totals.total)}`
+                    + ` · ${t('usageInput')} ${fmtNumber(totals.input)}`
+                    + ` · ${t('usageCache')} ${fmtNumber(totals.cacheRead)}`
+                    + ` · ${t('usageOutput')} ${fmtNumber(totals.output)}`)
+                : null,
+
+              totals && totals.total > 0
+                ? React.createElement('p', { style: styles.hint },
+                    t('usageCacheShare').replace('{pct}', cacheShare.toFixed(1) + '%'))
+                : null,
+
+              days.length > 0
+                ? React.createElement(React.Fragment, null,
+                    React.createElement('div', { style: styles.dayStrip }, days.map(day => {
+                      const height = peak > 0 && day.total > 0
+                        ? Math.max(4, Math.round((day.total / peak) * 44))
+                        : 2
+                      return React.createElement('div', {
+                        key: day.date,
+                        style: styles.dayCell,
+                        title: `${day.date} · ${fmtNumber(day.total)}`,
+                      },
+                        React.createElement('div', {
+                          style: { ...(day.total > 0 ? styles.dayBar : styles.dayBarEmpty), height: height + 'px' },
+                        }),
+                        React.createElement('span', { style: styles.dayLabel }, day.date.slice(5)),
+                      )
+                    })),
+                  )
+                : null,
+
+              models.length > 0
+                ? React.createElement('table', { style: styles.table },
+                    React.createElement('thead', null,
+                      React.createElement('tr', null,
+                        React.createElement('th', { style: styles.th }, t('usageModelCol')),
+                        React.createElement('th', { style: { ...styles.th, textAlign: 'right' } }, t('usageCalls')),
+                        React.createElement('th', { style: { ...styles.th, textAlign: 'right' } }, t('usageInput')),
+                        React.createElement('th', { style: { ...styles.th, textAlign: 'right' } }, t('usageCache')),
+                        React.createElement('th', { style: { ...styles.th, textAlign: 'right' } }, t('usageOutput')),
+                        React.createElement('th', { style: { ...styles.th, textAlign: 'right' } }, t('usageTotal')),
+                        React.createElement('th', { style: { ...styles.th, textAlign: 'right' } }, t('usageShare')),
+                      )),
+                    React.createElement('tbody', null,
+                      models.map(row => React.createElement('tr', { key: row.model },
+                        React.createElement('td', { style: styles.td }, row.model),
+                        React.createElement('td', { style: styles.tdNum }, fmtNumber(row.calls)),
+                        React.createElement('td', { style: styles.tdNum }, fmtNumber(row.input)),
+                        React.createElement('td', { style: styles.tdNum }, fmtNumber(row.cacheRead)),
+                        React.createElement('td', { style: styles.tdNum }, fmtNumber(row.output)),
+                        React.createElement('td', { style: styles.tdNum }, fmtNumber(row.total)),
+                        React.createElement(UsageShareCell, { share: row.share }),
+                      )),
+                      React.createElement('tr', null,
+                        React.createElement('td', { style: { ...styles.td, fontWeight: 600 } }, t('usageTotal')),
+                        React.createElement('td', { style: { ...styles.tdNum, fontWeight: 600 } }, fmtNumber(totals.calls)),
+                        React.createElement('td', { style: { ...styles.tdNum, fontWeight: 600 } }, fmtNumber(totals.input)),
+                        React.createElement('td', { style: { ...styles.tdNum, fontWeight: 600 } }, fmtNumber(totals.cacheRead)),
+                        React.createElement('td', { style: { ...styles.tdNum, fontWeight: 600 } }, fmtNumber(totals.output)),
+                        React.createElement('td', { style: { ...styles.tdNum, fontWeight: 600 } }, fmtNumber(totals.total)),
+                        React.createElement('td', { style: styles.tdNum }, '100%'),
+                      ),
+                    ),
+                  )
+                : React.createElement('div', { style: styles.banner },
+                    React.createElement('p', { style: { margin: 0, fontWeight: 600 } }, t('usageEmpty')),
+                    React.createElement('p', { style: styles.hint },
+                      source === 'log' ? t('usageSourceLogEmpty') : t('usageSourceLiveEmpty')),
+                  ),
+
+              source === 'live'
+                ? React.createElement('p', { style: styles.hint },
+                    `${t('usageSource')}: ${t('usageSourceLive')}`)
+                : null,
+
+              source === 'log' && sweep
+                ? React.createElement('p', { style: styles.hint },
+                    t('usageSweep')
+                      .replace('{sessions}', String(sweep.sessions))
+                      .replace('{processed}', String(sweep.processed))
+                      .replace('{failed}', String(sweep.failed))
+                    + (sweep.complete
+                      ? ''
+                      : ' ' + t('usageSweepPending').replace('{pending}', String(Math.max(0, sweep.changed - sweep.processed))))
+                    + (data.updatedAt ? ` · ${t('usageUpdated')} ${new Date(data.updatedAt).toLocaleTimeString()}` : ''))
+                : null,
+            )
+          : React.createElement('p', { style: styles.hint }, t('usageDisabled')),
+      )
+    }
+
+    /* ------------------------------------------------------------------ *
      * Page
      * ------------------------------------------------------------------ */
 
@@ -1584,6 +1937,11 @@ window.__ModuleLoader__.load({
       const [freeSel, setFreeSel] = React.useState(null)
       const [sessionForm, setSessionForm] = React.useState(null)
       const [sessionNotice, setSessionNotice] = React.useState(null)
+      const [usage, setUsage] = React.useState(null)
+      const [usageError, setUsageError] = React.useState(null)
+      const [usageLoading, setUsageLoading] = React.useState(false)
+      const [usageWindow, setUsageWindow] = React.useState(7)
+      const [checkingModels, setCheckingModels] = React.useState(false)
       const [refreshing, setRefreshing] = React.useState(false)
       const [fetching, setFetching] = React.useState(false)
       const [freeFetching, setFreeFetching] = React.useState(false)
@@ -1738,6 +2096,87 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // Local usage is its own request: it folds session logs, so it must not
+      // ride the 30s quota poll that reloads the whole page.
+      const loadUsage = React.useCallback(async () => {
+        setUsageLoading(true)
+        try {
+          const remote = await api()
+          if (!remote) throw new Error('opencodeSuite remote is unavailable')
+          const result = unwrapRemote(await remote.usageBreakdown({ days: usageWindow }))
+          setUsage(result)
+          setUsageError(null)
+        } catch (err) {
+          setUsageError(String((err && err.message) || err))
+        } finally {
+          setUsageLoading(false)
+        }
+      }, [api, usageWindow])
+
+      const onToggleUsage = (on) => {
+        runAction(async remote => remote.putConfig({ usageLogEnabled: on }), null).then(loadUsage)
+      }
+
+      const onCheckModels = async () => {
+        setCheckingModels(true)
+        try {
+          const remote = await api()
+          if (!remote) throw new Error('opencodeSuite remote is unavailable')
+          await unwrapRemote(await remote.checkModels())
+          await load()
+        } catch (err) {
+          setNotice({ ok: false, text: `${t('actionFailed')}: ${String((err && err.message) || err)}` })
+        } finally {
+          setCheckingModels(false)
+        }
+      }
+
+      const onAdoptNews = (tierId, ids) => {
+        if (tierId === 'go') {
+          onFetchModels()
+          return
+        }
+        // The free tier writes its whole list, so the new ids go in as bare
+        // entries alongside whatever is configured now.
+        const configured = data && data.freeTier && Array.isArray(data.freeTier.configured)
+          ? data.freeTier.configured.map(entry => entry.id)
+          : []
+        const entries = buildFreeTierEntries(configured, [...new Set([...configured, ...ids])])
+        if (entries === null || entries === undefined) {
+          setNotice({ ok: false, text: `${t('saveFailed')}: ${t('actionFailed')}` })
+          return
+        }
+        runAction(async remote => remote.putFreeTierModels(entries, true), null).then(async () => {
+          await remoteDismissNews(tierId)
+          await load()
+        })
+      }
+
+      const remoteDismissNews = async (tierId) => {
+        const remote = await api()
+        if (!remote) throw new Error('opencodeSuite remote is unavailable')
+        await unwrapRemote(await remote.dismissModelNews(tierId))
+      }
+
+      const onDismissNews = (tierId) => {
+        runAction(() => remoteDismissNews(tierId), null).then(load)
+      }
+
+      const onUsageSource = (source) => {
+        runAction(async remote => remote.putConfig({ usageLogSource: source }), null).then(loadUsage)
+      }
+
+      React.useEffect(() => { loadUsage() }, [loadUsage])
+
+      // A store with many sessions folds over several sweeps. Keep asking while
+      // one is still queued — each request is bounded, so this converges in the
+      // background instead of blocking the page.
+      React.useEffect(() => {
+        if (!usage || !usage.sweep || usage.sweep.complete) return undefined
+        const timer = setTimeout(() => { loadUsage() }, 1500)
+        return () => clearTimeout(timer)
+      }, [usage, loadUsage])
+
       const onSaveSession = (patch, invalidMessage) => {
         if (!patch) {
           setSessionNotice({ ok: false, text: `${t('saveFailed')}: ${invalidMessage}` })
@@ -1877,6 +2316,19 @@ window.__ModuleLoader__.load({
             ),
 
             React.createElement('div', { style: styles.divider }),
+            React.createElement(ModelNewsCard, {
+              t, watch: data.modelWatch, busy, checking: checkingModels,
+              onCheck: onCheckModels, onAdopt: onAdoptNews, onDismiss: onDismissNews,
+            }),
+
+            React.createElement('div', { style: styles.divider }),
+            React.createElement(UsageBreakdownCard, {
+              t, data: usage, error: usageError, loading: usageLoading,
+              windowDays: usageWindow, setWindowDays: setUsageWindow,
+              onRefresh: loadUsage, onToggle: onToggleUsage, onSource: onUsageSource, busy,
+            }),
+
+            React.createElement('div', { style: styles.divider }),
             React.createElement(FreeTierCard, {
               t, data: data.freeTier, sel: freeSel, setSel: setFreeSel, busy,
               onApply: onApplyFreeTier, onFetch: onFetchFreeTier, fetching: freeFetching,
@@ -1987,6 +2439,8 @@ window.__ModuleLoader__.load({
       ModelCard,
       FreeTierCard,
       SessionCard,
+      ModelNewsCard,
+      UsageBreakdownCard,
       PoolPage,
       TYPERT_REMOTE,
       unwrapRemote,

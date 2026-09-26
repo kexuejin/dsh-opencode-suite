@@ -142,6 +142,14 @@ Every key is optional; the defaults are what the bundle patch inserts.
     freeModelsBaseUrl: https://opencode.ai/zen/v1/models
     usageRefreshMs: 30000
     timeoutMs: 15000
+    usageLogEnabled: true          # local day × model token accounting
+    usageLogSource: live           # live = count this host's streams; log = fold the session log
+    usageLogWindowDays: 7          # days the card and the tool report
+    usageLogRetentionDays: 90      # day buckets kept; the horizon, not the window
+    usageLogSessionsPerSweep: 12   # changed sessions one refresh may open
+    usageLogSweepMaxMs: 4000       # wall clock one refresh may spend folding them
+    modelWatchEnabled: true        # poll both listings for new / delisted ids
+    modelWatchIntervalMs: 900000   # 15 min
     sessionHeaders:
       enabled: true               # on by default
       nanoidSessionId: true
@@ -190,7 +198,8 @@ The request-side image budget is a separate trio of constants
 
 **Settings → OpenCode 套件** (one sidebar entry, id `opencode-suite`) stacks:
 
-1. **Takeover banner** — serving / waiting, the active key, the current switch
+1. **New-model watch** — what the background listing check is holding (see below).
+2. **Takeover banner** — serving / waiting, the active key, the current switch
    policy, the last switch and its reason.
 2. **Go tier model selection** — *all models* or a custom set, per-model image
    declaration, *fetch models* against the live endpoint, and a capacity editor
@@ -199,13 +208,86 @@ The request-side image budget is a separate trio of constants
 4. **One card per key** — usage bars, state badge, and only the actions that
    state allows (switch / disable / enable / clear-invalid / clear-exhausted).
 5. **Key management** — add, rename, paste a secret, delete.
-6. **Free tier models** — configured vs online, adopt an online model by
+6. **Local usage (day × model)** — the token accounting described below.
+7. **Free tier models** — configured vs online, adopt an online model by
    checking it, drop a configured one by unchecking it, plus the delisted rows
    and the settings revision.
-7. **Session headers** — the master switch, digest length/alphabet, seed and
+8. **Session headers** — the master switch, digest length/alphabet, seed and
    verbose toggles, matched routes/hosts/headers, extra fixed headers, a
    User-Agent override, and the last 20 injections with their URL, header names,
    session id, digest and any error.
+
+## New-model watch
+
+A model that ships overnight is invisible until somebody opens the page: the
+drift report in `oc_model_status` and in the card is recomputed only when it is
+asked for. The watch closes that gap by polling both tiers' listings on a timer
+(`modelWatchIntervalMs`, default 15 minutes) and remembering what it has already
+seen in `$DSH_HOME/opencode-suite.watched.json`.
+
+- The **first pass is a baseline**, not an announcement: a fresh install, a
+  deleted state file, and a restart all adopt whatever is online silently.
+- After that, each new id is announced **once**, stamped with when it was first
+  seen, and stays on the card until you act. A delisted id is reported the same
+  way; one that comes back is news again.
+- The card (**模型上新提醒 / New models**) lists both tiers with per-tier
+  actions: *fetch into the Go tier*, *adopt into the free tier*, or *dismiss*.
+  `oc_model_status` and `oc_suite_status` report the same news in text, and a
+  pass that finds something also logs one line, so a headless run learns about
+  it without a page.
+- Dismissing clears the notice, not the seen set: a dismissed id is not
+  re-announced until it leaves and comes back.
+- A tier that fails to answer is recorded as an error and never blocks the other
+  one.
+
+What it does **not** do: push anything to a chat app or a notification service.
+The page banner, the tool output, and the log line are the three surfaces.
+
+## Local usage, by day and by model
+
+The Go usage endpoint answers exactly one question — how much of each plan
+window a **key** has spent — and it answers it as a percentage. It publishes no
+token counts and no model breakdown, so "which model burns the window" cannot
+come from there. That answer comes from the log this harness already writes: each
+`assistant/message` carries the model that produced it and the provider's own
+`usage` numbers.
+
+The **Local usage** card folds them per local calendar day and per model, and
+reports a window of 1 / 7 / 30 / 90 days:
+
+- a day strip, so a spike is visible without reading the table;
+- a model table — calls, input, cache read, output, total, and share;
+- the cache share of all tokens, which on a subscription is the number that
+  actually moves the plan window;
+- the sweep state, so "how much of the store is folded" is never a guess.
+
+**Two sources, one set of numbers.** `usageLogSource` picks where they come
+from, and a deployment picks one because a call seen by both would count twice:
+
+| Source | What it counts | What it costs | What it misses |
+| --- | --- | --- | --- |
+| `live` (default) | every usage report this host's own streams emit, folded as each turn ends | nothing — it rides the `llm/stream` interception the suite already has for session headers | anything from before the plugin was on, and anything another process streamed |
+| `log` | one completed model answer per `assistant/message` in the durable session log | bounded per refresh, but the first pass over a large store takes minutes and spreads over refreshes | a retried attempt that produced no message |
+
+Day keys are **local** dates, so "today" means your today. Subagent sessions are
+counted in both sources, because their calls draw on the same plan.
+
+The live source lives in memory between turns, so it is flushed to
+`$DSH_HOME/opencode-suite.usage.json` (throttled, and once more on shutdown) and
+seeded from that file on start: a host restart does not erase the day. A missing
+or corrupt file just starts the count from what this run sees.
+
+**Cost of a `log` refresh.** A session whose revision token did not move is
+skipped outright, and a session that grew is read from the offset the ledger last
+reached, so an unchanged day costs nothing. One refresh opens at most
+`usageLogSessionsPerSweep` changed sessions and spends at most
+`usageLogSweepMaxMs` on them, fastest-growing first; the rest stay queued and
+`sweep.complete` says so. On a store with thousands of sessions the first full
+accounting converges over several card refreshes rather than in one blocking
+pass — measured on a 1,487-session store, a refresh folds about a dozen sessions
+in ~5 s, so a cold pass takes minutes. A session that fails to fold three times
+in a row is set aside until its log moves again, so one permanently unreadable
+log cannot hold the sweep open forever.
 
 ## Capacities
 
@@ -226,6 +308,7 @@ wholesale — a partial patch would silently un-correct the other rows.
 | --- | --- |
 | `oc_suite_status` | takeover state, pool roster + per-key quota, exposed models, free-tier drift |
 | `oc_suite_pool` | `switch` / `disable` / `enable` / `clear-invalid` / `clear-exhausted` |
+| `oc_usage_models` | local tokens per day and per model — the only per-model answer available |
 | `oc_model_status` | per-tier configured vs live listing, with the drift |
 | `oc_model_add` | adopt live ids or full entries into one tier |
 | `oc_model_remove` | drop ids from one tier |

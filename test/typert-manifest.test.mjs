@@ -15,6 +15,9 @@ import test from 'node:test'
 
 const EXPECTED_METHODS = [
   'status',
+  'usageBreakdown',
+  'checkModels',
+  'dismissModelNews',
   'takeOverState',
   'setActive',
   'setDisabled',
@@ -104,7 +107,7 @@ test('every result schema accepts the real service output', async (t) => {
       return { replace: () => {} }
     },
   }
-  let config = {
+  const config = {
     route: 'opencode-go',
     keys: [
       { id: 'acc-a', label: '主号', apiKeyEnv: 'OPENCODE_GO_KEY_A' },
@@ -121,41 +124,50 @@ test('every result schema accepts the real service output', async (t) => {
     freeModelsBaseUrl: 'https://opencode.ai/zen/v1/models',
     usageRefreshMs: 30000,
     timeoutMs: 15000,
+    usageLogEnabled: true,
+    usageLogSource: 'live',
+    usageLogWindowDays: 7,
+    usageLogRetentionDays: 90,
+    usageLogSessionsPerSweep: 40,
+    usageLogSweepMaxMs: 4000,
+    modelWatchEnabled: true,
+    modelWatchIntervalMs: 900000,
   }
-  const watchers = new Set()
-  const scope = {
-    get: () => config,
-    watch: callback => { watchers.add(callback); return () => watchers.delete(callback) },
-    update: async patch => {
-      config = { ...config, ...patch }
-      for (const callback of watchers) await callback(config)
+  // The 0.1.7 settings contract: this plugin owns no settings scope any more, it
+  // keeps the Config references the Loader resolved and persists through
+  // `update(ns, patch)`, which commits into those references (cosmokit's shared
+  // `write` symbol — the same commit the Loader performs) and then announces the
+  // change. Other namespaces come back from `describe()` with a `value`.
+  const VOLATILE_WRITE = Symbol.for('cosmokit.volatile.write')
+  let suite
+  let settings = {
+    writable: true,
+    describe: () => [{
+      ns: 'llm-pi-ai',
+      revision: 3,
+      value: {
+        providers: {
+          opencode: {
+            apiKeyEnv: 'PI_AI_API_KEY',
+            baseURL: 'https://opencode.ai/zen/v1',
+            api: 'openai-completions',
+            models: [{ id: 'big-pickle', name: 'Big Pickle', contextWindow: 128000, maxTokens: 32000, input: ['text'] }],
+          },
+        },
+      },
+    }],
+    update: async (ns, patch) => {
+      if (ns !== 'opencode-suite') return
+      for (const [key, value] of Object.entries(patch)) suite.config[key][VOLATILE_WRITE](value)
+      root.emit('loader/volatile-update', [])
     },
-    replace: async () => {},
   }
   root.provide('llm', llms)
-  root.provide('settings', {
-    writable: true,
-    register: () => scope,
-    get: ns => (ns === 'llm-pi-ai'
-      ? {
-          providers: {
-            opencode: {
-              apiKeyEnv: 'PI_AI_API_KEY',
-              baseURL: 'https://opencode.ai/zen/v1',
-              api: 'openai-completions',
-              models: [{ id: 'big-pickle', name: 'Big Pickle', contextWindow: 128000, maxTokens: 32000, input: ['text'] }],
-            },
-          },
-          __revision: 3,
-        }
-      : undefined),
-    describe: () => [{ ns: 'llm-pi-ai', revision: 3 }],
-    update: async () => {},
-  })
+  root.provide('settings', settings)
   root.provide('credentials', { resolve: async () => undefined })
   root.provide('tools', { register: () => () => {} })
-  await root.plugin(OpenCodeSuite, {})
-  const suite = root.get('opencodeSuite')
+  await root.plugin(OpenCodeSuite, config)
+  suite = root.get('opencodeSuite')
 
   // Keep the test off the network: the report paths go through tierListing.
   suite.tierListing = async tierId => (tierId === 'go'
@@ -185,8 +197,8 @@ test('every result schema accepts the real service output', async (t) => {
   /** Validate one payload against the manifest's declared result codec. */
   const validateResult = (method, payload) => {
     const invocation = invocations.get(method)
-    const schema = invocation.result.schema
-    const parsed = schema.safeParse(payload)
+    // 0.1.7 codecs carry a `create()` factory rather than the schema instance.
+    const parsed = invocation.result.create().safeParse(payload)
     if (!parsed.success) {
       assert.fail(`${method} result rejected by its own strict codec: ${JSON.stringify(parsed.error.issues, null, 2)}`)
     }
@@ -195,13 +207,22 @@ test('every result schema accepts the real service output', async (t) => {
   const validateParam = (method, name, payload) => {
     const invocation = invocations.get(method)
     const parameter = invocation.parameters.find(entry => entry.name === name)
-    const parsed = parameter.codec.schema.safeParse(payload)
+    const parsed = parameter.codec.create().safeParse(payload)
     if (!parsed.success) {
       assert.fail(`${method}/${name} rejected by its own codec: ${JSON.stringify(parsed.error.issues, null, 2)}`)
     }
   }
 
   validateResult('status', await suite.status())
+  // No `sessionPersistence` in this composition: the method must still answer
+  // with a schema-valid payload that says why it is empty.
+  // The live source answers from what this host streamed, so it needs no
+  // persistence seam at all.
+  const breakdown = await suite.usageBreakdown({ days: 7 })
+  assert.equal(breakdown.source, 'live')
+  assert.equal(breakdown.error, null)
+  validateResult('usageBreakdown', breakdown)
+  validateResult('checkModels', await suite.checkModels())
   validateResult('takeOverState', await suite.takeOverState())
   validateResult('freeTier', await suite.freeTier())
   validateResult('refreshModels', await suite.refreshModels())
@@ -210,13 +231,16 @@ test('every result schema accepts the real service output', async (t) => {
   ]))
 
   validateParam('putKeys', 'keys', config.keys)
+  validateParam('usageBreakdown', 'days', 30)
+  const badDays = invocations.get('usageBreakdown').parameters[0].codec.create().safeParse({ days: 'a week' })
+  assert.equal(badDays.success, false, 'a wrong-typed window never reaches the service')
   validateParam('putConfig', 'config', { preemptAtPercent: 50, models: ['a'], imageModels: ['a'], modelCapacities: { a: { contextWindow: 1, maxTokens: 1 } } })
   validateParam('putSessionHeaders', 'patch', { enabled: false, hosts: ['opencode.ai'], extraHeaders: { 'x-a': 'b' } })
   validateParam('putFreeTierModels', 'entries', [{ id: 'a', contextWindow: 1, maxTokens: 1, input: ['text'] }])
 
   // A payload the card must never be able to slip through: an unknown
   // nanoidLength is refused by the codec before the service ever sees it.
-  const bad = invocations.get('putSessionHeaders').parameters[0].codec.schema.safeParse({ nanoidLength: 'eight' })
+  const bad = invocations.get('putSessionHeaders').parameters[0].codec.create().safeParse({ nanoidLength: 'eight' })
   assert.equal(bad.success, false, 'a wrong-typed patch never reaches the service')
 
   await root.fiber.dispose()

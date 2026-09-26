@@ -52,45 +52,33 @@ function makeMockLlms() {
 }
 
 /**
- * The settings service double. It carries BOTH faces of the real contract: the
- * service-level `get(ns)` the free-tier path reads, and the owner scope
- * `register()` hands back for this plugin's own namespace.
+ * The settings service double for the 0.1.7 contract. The removed owner scope is
+ * gone on purpose: this plugin keeps the Config references the Loader resolved
+ * for it and persists through `update(ns, patch)`.
  *
- * `update` + `watch` are real here: the plugin re-reads its own configuration
- * through `scope.get()` and re-applies it from `scope.watch()`, so a double
- * that swallowed either half would make every settings write look like a no-op.
+ * `update` is real: it commits the patch into those very references through
+ * cosmokit's `write` symbol — the same thing the Loader does when it reconciles
+ * a profile patch — and then fires `loader/volatile-update`, which is what makes
+ * the plugin re-read the section in production. A double that swallowed either
+ * half would make every settings write look like a no-op.
+ *
+ * `configOf` is late-bound because the references only exist once the plugin is
+ * mounted (the schema materializes them during config resolution).
  */
-function makeMockSettings(initialConfig, { sections = {}, onRegister } = {}) {
-  let current = () => ({ ...initialConfig })
-  const watchers = new Set()
-  const scope = {
-    get: () => current(),
-    watch: callback => {
-      watchers.add(callback)
-      return () => watchers.delete(callback)
-    },
-    update: async patch => {
-      const prev = current()
-      const next = { ...prev, ...patch }
-      current = () => next
-      onRegister?.(patch, next)
-      for (const callback of watchers) await callback(next, prev)
-    },
-    replace: async section => {
-      const prev = current()
-      const next = { ...section }
-      current = () => next
-      for (const callback of watchers) await callback(next, prev)
-    },
-  }
+const VOLATILE_WRITE = Symbol.for('cosmokit.volatile.write')
+
+function makeMockSettings(configOf, { sections = {}, onUpdate } = {}) {
   const store = { ...sections }
   return {
-    scope,
     writable: true,
-    register: () => scope,
-    get: ns => store[ns],
-    describe: () => Object.keys(store).map(ns => ({ ns, revision: store[ns]?.__revision ?? 7 })),
+    describe: () => Object.keys(store).map(ns => ({ ns, revision: store[ns]?.__revision ?? 7, value: store[ns] })),
     update: async (ns, patch) => {
+      if (ns === 'opencode-suite') {
+        const config = configOf()
+        for (const [key, value] of Object.entries(patch)) config[key][VOLATILE_WRITE](value)
+        onUpdate?.(patch)
+        return
+      }
       store[ns] = { ...(store[ns] ?? {}), ...patch }
       store[ns].__revision = (store[ns].__revision ?? 7) + 1
     },
@@ -143,14 +131,23 @@ function freeTierSection(models = []) {
 async function boot(OpenCodeSuite, Context, { config = {}, sections, llm } = {}) {
   const root = new Context()
   const llms = llm ?? makeMockLlms()
-  const settings = makeMockSettings({ ...BASE_CONFIG, ...config }, { sections })
+  let suite
+  const settings = makeMockSettings(() => suite.config, {
+    sections,
+    // The Loader announces a committed volatile update on this event; the plugin
+    // re-applies the section from the references it already holds.
+    onUpdate: () => root.emit('loader/volatile-update', []),
+  })
   const tools = makeMockTools()
   root.provide('llm', llms)
   root.provide('settings', settings)
   root.provide('credentials', { resolve: async () => undefined })
   root.provide('tools', tools)
-  await root.plugin(OpenCodeSuite, {})
-  return { root, llms, settings, tools, plugin: root.get('opencodeSuite') }
+  // Plain values in: the schema materializes the volatile references the live
+  // host would have handed over.
+  await root.plugin(OpenCodeSuite, { ...BASE_CONFIG, ...config })
+  suite = root.get('opencodeSuite')
+  return { root, llms, settings, tools, plugin: suite }
 }
 
 const TWO_KEYS = [
@@ -185,7 +182,7 @@ test('the plugin takes over the opencode-go route and serves the pi-ai catalog',
   await root.fiber.dispose()
 })
 
-test('the plugin registers all six agent tools with unique names', async (t) => {
+test('the plugin registers all seven agent tools with unique names', async (t) => {
   const harness = await loadHarness(t)
   if (!harness) return
   const { root, tools } = await boot(harness.OpenCodeSuite, harness.Context)
@@ -197,6 +194,7 @@ test('the plugin registers all six agent tools with unique names', async (t) => 
     'oc_model_sync',
     'oc_suite_pool',
     'oc_suite_status',
+    'oc_usage_models',
   ])
   for (const tool of tools.tools) {
     assert.equal(typeof tool.execute, 'function', `${tool.name} is executable`)
@@ -624,13 +622,16 @@ test('concurrent streams keep their own session ids', async (t) => {
   await root.fiber.dispose()
 })
 
-test('scopeStream is an exact pass-through when session headers are disabled', async (t) => {
+test('scopeStream is an exact pass-through when both interceptors are off', async (t) => {
   const harness = await loadHarness(t)
   if (!harness) return
   const realFetch = globalThis.fetch
   t.after(() => { globalThis.fetch = realFetch })
   const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
-    config: { sessionHeaders: { enabled: false } },
+    // The identity guarantee belongs to the header interceptor: with local
+    // usage accounting on, scopeStream also wraps the stream to read its usage
+    // chunks, which no pass-through can survive.
+    config: { sessionHeaders: { enabled: false }, usageLogEnabled: false },
   })
 
   const sentinel = (async function* () {
@@ -966,6 +967,12 @@ test('oc_suite_status renders a full report from the live service', async (t) =>
   assert.match(block.text, /Key pool: 2 key\(s\)/)
   assert.match(block.text, /Session headers: ON/)
   assert.match(block.text, /OpenCode Zen 免费档/)
+  // The drift block reads the `freeTier()` shape (`configured` / `live` are the
+  // lists themselves), not the `modelTierReport()` one that `oc_model_status`
+  // renders. Asserting the label alone passed while the block printed `null`
+  // and stopped early, so the numbers are what pin this down.
+  assert.match(block.text, /configured 0 · live 1/)
+  assert.match(block.text, /\+ online, not configured \(1\): big-pickle/)
   await root.fiber.dispose()
 })
 
@@ -974,11 +981,14 @@ test('a tool contains a service failure instead of throwing across the registry'
   if (!harness) return
   const root = new harness.Context()
   const tools = makeMockTools()
+  let suite
+  const settings = makeMockSettings(() => suite.config, { onUpdate: () => root.emit('loader/volatile-update', []) })
   root.provide('llm', makeMockLlms())
-  root.provide('settings', makeMockSettings({ ...BASE_CONFIG }))
+  root.provide('settings', settings)
   root.provide('credentials', { resolve: async () => undefined })
   root.provide('tools', tools)
-  await root.plugin(harness.OpenCodeSuite, {})
+  await root.plugin(harness.OpenCodeSuite, { ...BASE_CONFIG })
+  suite = root.get('opencodeSuite')
 
   const poolTool = tools.tools.find(entry => entry.name === 'oc_suite_pool')
   // An unknown action and an unknown key both come back as values, never throws.
@@ -993,4 +1003,70 @@ test('a tool contains a service failure instead of throwing across the registry'
   const orphaned = await statusTool.execute({}, {})
   assert.match(orphaned.error, /is unavailable; enable the dsh-opencode-suite plugin/)
   await root.fiber.dispose()
+})
+
+test('the live source accounts a streamed call while session headers still scope it', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { sessionHeaders: { enabled: true } },
+  })
+  const options = { provider: 'opencode-go', model: 'grok-4.7', sessionId: 's-live' }
+  const chunks = []
+  for await (const chunk of plugin.scopeStream(options, () => (async function* () {
+    yield { type: 'text', text: 'hi' }
+    yield { type: 'usage', usage: { inputTokens: 120, outputTokens: 8, cacheReadTokens: 4000 } }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })())) chunks.push(chunk)
+
+  assert.equal(chunks.length, 3, 'every chunk reaches the consumer untouched')
+  const report = await plugin.usageBreakdown({ days: 1 })
+  assert.equal(report.source, 'live')
+  assert.equal(report.error, null)
+  assert.equal(report.totals.calls, 1)
+  assert.equal(report.totals.cacheRead, 4000)
+  assert.deepEqual(report.models.map(row => row.model), ['opencode-go/grok-4.7'])
+  await root.fiber.dispose()
+})
+
+test('the log source is what reads the session log, and the two are exclusive', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { usageLogSource: 'log' },
+  })
+  const empty = await plugin.usageBreakdown({ days: 1 })
+  assert.equal(empty.source, 'log')
+  // No persistence seam in this composition, and it says why instead of
+  // pretending the history is empty.
+  assert.equal(empty.error, 'the sessionPersistence service is unavailable in this profile')
+  await root.fiber.dispose()
+})
+
+test('the live counters survive a host restart through their own state file', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const stream = async (plugin, usage) => {
+    const options = { provider: 'opencode-go', model: 'grok-4.7', sessionId: 's' }
+    for await (const _chunk of plugin.scopeStream(options, () => (async function* () {
+      yield { type: 'usage', usage }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })())) { /* drain */ }
+  }
+  const first = await boot(harness.OpenCodeSuite, harness.Context)
+  await stream(first.plugin, { inputTokens: 100, outputTokens: 20, cacheReadTokens: 9000 })
+  first.plugin.flushUsageState()
+  const before = await first.plugin.usageBreakdown({ days: 1 })
+  assert.equal(before.totals.calls, 1)
+  await first.root.fiber.dispose()
+
+  // A second host over the same DSH_HOME: the day's totals are still there.
+  const second = await boot(harness.OpenCodeSuite, harness.Context)
+  const after = await second.plugin.usageBreakdown({ days: 1 })
+  assert.equal(after.totals.calls, 1, 'a restart must not erase the day')
+  assert.equal(after.totals.cacheRead, 9000)
+  await stream(second.plugin, { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0 })
+  const grown = await second.plugin.usageBreakdown({ days: 1 })
+  assert.equal(grown.totals.calls, 2, 'new turns add to the restored counters')
+  await second.root.fiber.dispose()
 })

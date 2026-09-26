@@ -33,6 +33,8 @@
     "index.js",
     "pool.js",
     "usage.js",
+    "usage-log.js",
+    "model-watch.js",
     "catalog.js",
     "session.js",
     "free-tier.js",

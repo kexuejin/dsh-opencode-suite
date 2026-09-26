@@ -12,6 +12,9 @@
  *  - `oc_suite_status` / `oc_suite_pool` reach the suite service itself — pool
  *    roster, takeover state, per-key quota, and the pool switch/disable/
  *    clear-invalid actions.
+ *  - `oc_usage_models` folds the session log into per-day, per-model token
+ *    counts, the one surface a "which model is expensive" answer can come from:
+ *    the usage endpoint reports plan windows per key and never a breakdown.
  *  - `oc_model_status` / `oc_model_add` / `oc_model_remove` / `oc_model_sync`
  *    manage both tiers' catalogs. The two tiers differ underneath and the tools
  *    say so: the Go tier edits this plugin's own catalog policy (the pooled
@@ -42,6 +45,7 @@ export function createTools(resolve) {
   return [
     suiteStatusTool(resolve),
     suitePoolTool(resolve),
+    usageModelsTool(resolve),
     modelStatusTool(resolve),
     modelAddTool(resolve),
     modelRemoveTool(resolve),
@@ -160,6 +164,31 @@ function suiteStatusTool(resolve) {
 }
 
 /** Render the three quota windows on one line. */
+/** The watcher's news, in the tool's plain text. */
+function appendModelNews(lines, watch) {
+  if (watch === undefined || watch === null) {
+    lines.push('Model watch: no report in this payload')
+    return
+  }
+  if (watch.enabled === false) {
+    lines.push('Model watch: OFF — listing changes only show when something asks.')
+    return
+  }
+  const go = watch.tiers.go
+  const free = watch.tiers.free
+  if (go.pending.length === 0 && go.gone.length === 0 && free.pending.length === 0 && free.gone.length === 0) {
+    lines.push(`Model watch: nothing new · last checked ${watch.lastCheckedAt ?? 'never'}`)
+    return
+  }
+  lines.push(`Model watch (last checked ${watch.lastCheckedAt ?? 'never'}, every ${Math.round(watch.intervalMs / 60000)} min):`)
+  for (const [label, tier] of [['go', go], ['free', free]]) {
+    if (tier.pending.length === 0 && tier.gone.length === 0) continue
+    lines.push(`  ${label}: ${tier.pending.length} new online, ${tier.gone.length} delisted`)
+    for (const item of tier.pending) lines.push(`    + ${item.id} (first seen ${item.firstSeenAt})`)
+    for (const item of tier.gone) lines.push(`    - ${item.id} (gone since ${item.firstSeenAt})`)
+  }
+}
+
 function renderUsageWindows(usage) {
   const render = (label, window) => {
     if (window === null || window === undefined) return `${label} n/a`
@@ -170,22 +199,115 @@ function renderUsageWindows(usage) {
   return [render('5h', usage.rolling), render('week', usage.weekly), render('month', usage.monthly)].join(' · ')
 }
 
-/** Append one free-tier drift block. */
+/**
+ * Append the free-tier drift block for `oc_suite_status`, which reports the
+ * `freeTier()` shape: `exists` rather than `routeExists`, and `configured` /
+ * `live` as the model-entry and id lists themselves rather than as pre-counted
+ * numbers. `oc_model_status` renders the other shape; see `renderTierBlock`.
+ */
 function appendTierReport(lines, report) {
   const tier = TIERS[report.tier]
   lines.push(`${tier.label} (route "${report.route}")`)
-  if (report.error !== undefined) {
+  if (report.error !== undefined && report.error !== null) {
     lines.push(`  ${report.error}`)
     return
   }
-  if (report.routeExists === false) {
+  if (report.exists === false) {
     lines.push('  route not declared under llm-pi-ai.providers; declare it (apiKeyEnv/baseURL) on the Models page first')
     return
   }
-  lines.push(`  configured ${report.configuredCount} · live ${report.liveCount}`)
+  lines.push(`  configured ${report.configured.length} · live ${report.live.length}`)
   if (report.added.length > 0) lines.push(`  + online, not configured (${report.added.length}): ${report.added.join(', ')}`)
   else lines.push('  + nothing new online')
   if (report.stale.length > 0) lines.push(`  - delisted, still configured (${report.stale.length}): ${report.stale.join(', ')}`)
+}
+
+/* ------------------------------------------------------------------ *
+ * Local token accounting
+ * ------------------------------------------------------------------ */
+
+/** One token-count row, right-aligned so a table stays readable. */
+function renderCountRow(label, row, share) {
+  const pct = share === undefined || share === null ? '' : `  ${(share * 100).toFixed(1)}%`
+  return `  ${label.padEnd(34)} ${String(row.calls).padStart(6)} calls`
+    + `  in ${String(row.input).padStart(12)}  cache ${String(row.cacheRead).padStart(13)}`
+    + `  out ${String(row.output).padStart(10)}${pct}`
+    + `  (total ${row.total})`
+}
+
+function usageModelsTool(resolve) {
+  return {
+    name: 'oc_usage_models',
+    description:
+      'Report local token usage per day and per model — counted live from this host\'s own streams by default, '
+      + 'or folded from the durable session log when usageLogSource is "log". '
+      + 'Use it to answer "which model is expensive" or "how much did today cost": the Go usage endpoint '
+      + '(oc_suite_status) reports plan windows per KEY and never a model breakdown, so this tool is the '
+      + 'only place a per-model answer comes from. Read-only; it changes no key, model, or config.',
+    parameters: {
+      type: 'object',
+      properties: {
+        days: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 365,
+          description: 'Window in days, newest day last. Defaults to the configured card window.',
+        },
+        perDay: {
+          type: 'boolean',
+          description: 'Include the per-day breakdown as well as the per-model totals (default true).',
+        },
+      },
+    },
+    output: {
+      schema: { type: 'object' },
+      render(_args, value) {
+        if (value.error !== undefined && value.error !== null) return [{ type: 'text', text: value.error }]
+        const lines = []
+        lines.push(`Local token usage (${value.source}) · last ${value.windowDays} day(s) · updated ${value.updatedAt ?? 'never'}`)
+        if (value.source === 'live') {
+          lines.push('Source: what this host streamed while the plugin was on. There is no history from before that,')
+          lines.push('and a call that failed before completing still reports the tokens the provider billed.')
+        }
+        lines.push(`Sessions ${value.sweep.sessions} · changed ${value.sweep.changed}`
+          + ` · folded this sweep ${value.sweep.processed} · unreadable ${value.sweep.failed}`
+          + `${value.sweep.complete ? '' : ' · sweep incomplete, more sessions queued'}`)
+        lines.push('')
+        if (value.models.length === 0) {
+          lines.push('No model calls in this window. The log holds no assistant message with usage,')
+          lines.push('which is what a fresh profile or a window before the first call looks like.')
+          return [{ type: 'text', text: lines.join('\n') }]
+        }
+        lines.push('By model (share of the window):')
+        for (const row of value.models) lines.push(renderCountRow(row.model, row, row.share))
+        lines.push(renderCountRow('TOTAL', value.totals, null))
+        const cacheShare = value.totals.total === 0 ? 0 : value.totals.cacheRead / value.totals.total
+        lines.push('')
+        lines.push(`Cache reads are ${(cacheShare * 100).toFixed(1)}% of all tokens in this window — `
+          + 'on a subscription plan that share, not output volume, is what burns the window.')
+        if (value.days.length > 0) {
+          lines.push('')
+          lines.push('By day:')
+          for (const day of value.days) {
+            lines.push(renderCountRow(day.date, day, null))
+            for (const row of day.models) lines.push(renderCountRow(`  ${row.model}`, row, row.share))
+          }
+        }
+        return [{ type: 'text', text: lines.join('\n') }]
+      },
+    },
+    timeoutMs: 60000,
+    async execute(args) {
+      try {
+        const days = args && Number.isSafeInteger(args.days) && args.days > 0 ? args.days : undefined
+        const result = await requireSuite(resolve).usageBreakdown(days === undefined ? {} : { days })
+        if (args && args.perDay === false) return { ...result, days: [] }
+        return result
+      } catch (error) {
+        return { error: messageOf(error) }
+      }
+    },
+  }
 }
 
 const POOL_ACTIONS = ['switch', 'disable', 'enable', 'clear-invalid', 'clear-exhausted']
@@ -244,8 +366,9 @@ function modelStatusTool(resolve) {
       + 'https://opencode.ai/zen/go/v1/models (Go tier, route "opencode-go") right now, then lists: how many '
       + 'models are configured, how many are listed online, which online ids are not configured yet, and '
       + 'which configured ids have been delisted. The Go tier is served by this plugin\'s pooled adapter, so '
-      + 'its "configured" answer is the pooled catalog policy, not an llm-pi-ai models list. Read-only; use '
-      + 'oc_model_add / oc_model_remove / oc_model_sync to change anything.',
+      + 'its "configured" answer is the pooled catalog policy, not an llm-pi-ai models list. It also reports '
+      + 'what the background listing watch is still holding as unhandled (new online ids, delisted ids). '
+      + 'Read-only; use oc_model_add / oc_model_remove / oc_model_sync to change anything.',
     parameters: { type: 'object', properties: {} },
     output: {
       schema: { type: 'object' },
@@ -256,6 +379,11 @@ function modelStatusTool(resolve) {
           lines.push('')
           lines.push(...renderTierBlock(value.tiers[tierId]))
         }
+        // The watcher's memory is what separates "nothing changed" from "changed
+        // and nobody acted": the drift above is recomputed on every call, while
+        // this is what the background pass noticed and is still holding.
+        lines.push('')
+        appendModelNews(lines, value.modelWatch)
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
@@ -283,7 +411,7 @@ function modelStatusTool(resolve) {
 function renderTierBlock(report) {
   const tier = TIERS[report.tier]
   const lines = [`${tier.label} (route "${report.route}", ${tier.baseURL})`]
-  if (report.error !== undefined) {
+  if (report.error !== undefined && report.error !== null) {
     lines.push(`  ${report.error}`)
     return lines
   }
@@ -462,7 +590,7 @@ function modelSyncTool(resolve) {
           const report = value.routes[tierId]
           if (report === undefined) continue
           const tier = TIERS[tierId]
-          if (report.error !== undefined) {
+          if (report.error !== undefined && report.error !== null) {
             lines.push(`${tier.label}: ${report.error}`)
             continue
           }
@@ -474,7 +602,7 @@ function modelSyncTool(resolve) {
           if (report.planRemove.length > 0 && report.appliedRemove.length === 0) lines.push(`  remove: ${report.planRemove.join(', ')}`)
           if (report.assumedCapacityIds.length > 0) lines.push(`  assumed capacities on: ${report.assumedCapacityIds.join(', ')}`)
           if (report.mode !== undefined && report.mode !== null) lines.push(`  pooled catalog mode is now "${report.mode}"`)
-          if (report.error2 !== undefined) lines.push(`  write failed: ${report.error2}`)
+          if (report.error2 !== undefined && report.error2 !== null) lines.push(`  write failed: ${report.error2}`)
         }
         return [{ type: 'text', text: lines.join('\n') }]
       },

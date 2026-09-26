@@ -157,7 +157,7 @@ test('every Remote descriptor carries strict codecs (client binder requirement)'
   if (!loaded) return
   const { TYPERT_REMOTE } = loaded.module.__test
   assert.equal(TYPERT_REMOTE.package, 'dsh-opencode-suite')
-  assert.equal(TYPERT_REMOTE.descriptors.length, 14)
+  assert.equal(TYPERT_REMOTE.descriptors.length, 17)
   for (const descriptor of TYPERT_REMOTE.descriptors) {
     assert.equal(descriptor.result.mode, 'strict', `${descriptor.method} result must be strict`)
     assert.equal(typeof descriptor.result.schema.parse, 'function')

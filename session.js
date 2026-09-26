@@ -231,6 +231,52 @@ export function createSessionScope() {
 }
 
 /**
+ * Wrap a downstream LLM chunk stream to report every usage chunk it carries.
+ *
+ * The suite already intercepts `llm/stream` to scope session headers, so the
+ * same pass can read what a request consumed without a second interception and
+ * without touching the durable log. Chunks pass through untouched; the observer
+ * sees `{type: 'usage'}` chunks only, and a throwing observer is swallowed so
+ * accounting can never break a turn.
+ * @param iterable - the downstream chunk stream.
+ * @param onUsage - called with the chunk's `usage` object.
+ * @returns an AsyncIterable with the same chunk semantics.
+ */
+export function observedIterable(iterable, onUsage) {
+  const iterator = iterable[Symbol.asyncIterator]()
+  const observe = value => {
+    try {
+      if (value && value.type === 'usage' && value.usage !== undefined) onUsage(value.usage)
+    } catch {
+      // Accounting must never break a turn.
+    }
+    return value
+  }
+  const pass = (method, args) => {
+    const fn = iterator[method]
+    if (typeof fn !== 'function') return undefined
+    return Promise.resolve(fn.apply(iterator, args)).then(result => {
+      if (result && result.done !== true) observe(result.value)
+      return result
+    })
+  }
+  return {
+    [Symbol.asyncIterator]() {
+      return this
+    },
+    next() {
+      return pass('next', []) ?? Promise.resolve({ done: true, value: undefined })
+    },
+    return(...args) {
+      return pass('return', args) ?? Promise.resolve({ done: true, value: undefined })
+    },
+    throw(...args) {
+      return pass('throw', args) ?? Promise.resolve({ done: true, value: undefined })
+    },
+  }
+}
+
+/**
  * Wrap a downstream LLM chunk stream so each pull runs inside the scope,
  * keeping the session id visible to everything the adapter does on that pull.
  * @param scope - the session scope.

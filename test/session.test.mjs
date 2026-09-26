@@ -14,6 +14,7 @@ import {
   matchesTarget,
   nanoidOf,
   normalizeSessionConfig,
+  observedIterable,
   scopedIterable,
   stripSessionPrefix,
   wireSessionIdOf,
@@ -477,4 +478,35 @@ test('the env fallback reads its variable name live', () => {
     if (saved === undefined) delete process.env.OC_LIVE_SID
     else process.env.OC_LIVE_SID = saved
   }
+})
+
+test('observedIterable reports usage chunks and passes every chunk through', async () => {
+  const seen = []
+  const chunks = [
+    { type: 'text', text: 'a' },
+    { type: 'usage', usage: { inputTokens: 3, outputTokens: 1 } },
+    { type: 'text', text: 'b' },
+  ]
+  const source = {
+    async *[Symbol.asyncIterator]() {
+      for (const chunk of chunks) yield chunk
+    },
+  }
+  const seenOut = []
+  for await (const chunk of observedIterable(source, usage => seen.push(usage))) seenOut.push(chunk)
+  assert.deepEqual(seenOut, chunks)
+  assert.deepEqual(seen, [{ inputTokens: 3, outputTokens: 1 }])
+})
+
+test('observedIterable survives a throwing observer and a non-usage chunk', async () => {
+  const source = {
+    async *[Symbol.asyncIterator]() {
+      yield { type: 'usage', usage: { inputTokens: 1 } }
+      yield { type: 'done' }
+    },
+  }
+  const out = []
+  const wrapped = observedIterable(source, () => { throw new Error('accounting exploded') })
+  for await (const chunk of wrapped) out.push(chunk.type)
+  assert.deepEqual(out, ['usage', 'done'])
 })

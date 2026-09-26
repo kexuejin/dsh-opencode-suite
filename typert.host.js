@@ -120,6 +120,72 @@ const sessionHeadersSchema = z.object({
   recent: z.array(injectionSchema),
 })
 
+// Local token accounting, folded from the session log by usage-log.js. Every
+// counter is a plain non-negative integer sum; `share` is the row's fraction of
+// its day (models inside a day) or of the window (the model list).
+const usageCountersSchema = z.object({
+  calls: z.number(),
+  input: z.number(),
+  output: z.number(),
+  cacheRead: z.number(),
+  cacheWrite: z.number(),
+  reasoning: z.number(),
+  total: z.number(),
+})
+
+const usageModelRowSchema = usageCountersSchema.extend({
+  model: z.string(),
+  share: z.number(),
+})
+
+const usageDaySchema = usageCountersSchema.extend({
+  date: z.string(),
+  models: z.array(usageModelRowSchema),
+})
+
+const usageBreakdownSchema = z.object({
+  enabled: z.boolean(),
+  source: z.union([z.literal('live'), z.literal('log')]),
+  error: z.string().nullable(),
+  updatedAt: z.string().nullable(),
+  windowDays: z.number(),
+  retentionDays: z.number(),
+  sweep: z.object({
+    sessions: z.number(),
+    changed: z.number(),
+    processed: z.number(),
+    failed: z.number(),
+    complete: z.boolean(),
+    elapsedMs: z.number(),
+  }),
+  days: z.array(usageDaySchema),
+  models: z.array(usageModelRowSchema),
+  totals: usageCountersSchema.extend({ days: z.number() }),
+})
+
+const modelNoticeSchema = z.object({
+  id: z.string(),
+  firstSeenAt: z.string(),
+})
+
+const modelWatchTierSchema = z.object({
+  pending: z.array(modelNoticeSchema),
+  gone: z.array(modelNoticeSchema),
+  online: z.number(),
+})
+
+const modelWatchSchema = z.object({
+  enabled: z.boolean(),
+  intervalMs: z.number(),
+  lastCheckedAt: z.string().nullable(),
+  error: z.string().nullable(),
+  pendingTotal: z.number(),
+  tiers: z.object({
+    go: modelWatchTierSchema,
+    free: modelWatchTierSchema,
+  }),
+})
+
 const suiteStatusSchema = z.object({
   takeover: z.string(),
   route: z.string(),
@@ -135,6 +201,7 @@ const suiteStatusSchema = z.object({
   takeoverHint: z.string().nullable(),
   keys: z.array(keyStatusSchema),
   freeTier: freeTierSchema,
+  modelWatch: modelWatchSchema,
   sessionHeaders: sessionHeadersSchema,
 })
 
@@ -196,7 +263,11 @@ const freeTierEntrySchema = z.object({
   ]).optional(),
 })
 
-const strict = (typeSymbol, schema) => ({ mode: 'strict', typeSymbol, schema })
+// The loader's 0.1.7 contract: a strict codec carries a `create()` FACTORY that
+// materializes the schema on first boundary use, not the schema instance itself.
+// A codec without `create` fails manifest validation, which fails the whole
+// plugin activation (every /api/opencodeSuite/* route answers 404).
+const strict = (typeSymbol, schema) => ({ mode: 'strict', typeSymbol, create: () => schema })
 
 const invocation = (method, parameters, result) => ({
   id: `dsh-opencode-suite#opencodeSuite/${method}`,
@@ -216,6 +287,26 @@ export const TYPERT = {
   schemas: [],
   invocations: [
     invocation('status', [], strict('dsh-opencode-suite#SuiteStatus', suiteStatusSchema)),
+    invocation('usageBreakdown', [
+      {
+        name: 'days',
+        wire: 'days',
+        typeSymbol: 'dsh-opencode-suite#UsageWindowDays',
+        schema: z.number().int().min(1).max(365).optional(),
+      },
+    ], strict('dsh-opencode-suite#UsageBreakdown', usageBreakdownSchema)),
+    invocation('checkModels', [], strict('dsh-opencode-suite#ModelCheckResult', z.object({
+      notices: z.array(z.string()),
+      pendingTotal: z.number(),
+    }))),
+    invocation('dismissModelNews', [
+      {
+        name: 'tier',
+        wire: 'tier',
+        typeSymbol: 'dsh-opencode-suite#WatchedTier',
+        schema: z.union([z.literal('go'), z.literal('free')]),
+      },
+    ], strict('number', z.number())),
     invocation('takeOverState', [], strict('string', z.string())),
     invocation('setActive', [
       { name: 'id', wire: 'id', typeSymbol: 'string', schema: z.string() },

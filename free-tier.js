@@ -29,15 +29,26 @@ export class FreeTierError extends Error {
 }
 
 /**
+ * Locate the llm-pi-ai form among the active settings descriptors.
+ * @param settings - the host settings service.
+ * @returns the descriptor, or undefined when that namespace has no live form.
+ */
+function findSection(settings) {
+  const descriptors = typeof settings.describe === 'function' ? settings.describe() : []
+  return descriptors.find(descriptor => descriptor.ns === SETTINGS_NS)
+}
+
+/**
  * Read the configured `providers` section of the llm-pi-ai namespace.
  * @param settings - the host settings service.
  * @returns the resolved providers object (may be empty).
  */
 export function readProviders(settings) {
-  const section = settings.get(SETTINGS_NS)
+  const found = findSection(settings)
+  const section = found?.value
   if (section === undefined || section === null || typeof section !== 'object') {
     throw new FreeTierError(
-      `the "${SETTINGS_NS}" settings namespace is not registered; install the harness base bundle (llm-pi-ai) first`,
+      `the "${SETTINGS_NS}" settings form is not available; install the harness base bundle (llm-pi-ai) first`,
       'NO_SETTINGS',
     )
   }
@@ -77,12 +88,10 @@ export function readRouteModels(settings, route) {
 /**
  * Read the namespace's current revision for optimistic writes.
  * @param settings - the host settings service.
- * @returns the revision number, or `undefined` when the namespace is absent.
+ * @returns the revision number, or `undefined` when the form is absent.
  */
 export function describeRevision(settings) {
-  const descriptors = typeof settings.describe === 'function' ? settings.describe() : []
-  const found = descriptors.find(descriptor => descriptor.ns === SETTINGS_NS)
-  return found === undefined ? undefined : found.revision
+  return findSection(settings)?.revision
 }
 
 /**
