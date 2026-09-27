@@ -198,7 +198,11 @@ The request-side image budget is a separate trio of constants
 
 **Settings → OpenCode 套件** (one sidebar entry, id `opencode-suite`) stacks:
 
-1. **New-model watch** — what the background listing check is holding (see below).
+1. **Composer dock** — under the composer, beside the stats pills: today's token
+   total with its source, and a dot with the count of unhandled new models.
+   Clicking the dot suppresses it there; it never clears the host's work list,
+   which is what the watch card below acts on. Client-only, no host restart.
+2. **New-model watch** — what the background listing check is holding (see below).
 2. **Takeover banner** — serving / waiting, the active key, the current switch
    policy, the last switch and its reason.
 2. **Go tier model selection** — *all models* or a custom set, per-model image
