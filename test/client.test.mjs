@@ -1005,7 +1005,7 @@ test('the IM row offers the discovered targets and explains an empty one', async
   const config = { enabled: false, botId: '', targetId: '' }
 
   const ready = render({
-    config,
+    config: { ...config, botId: 'bot_1', targetId: 'release-alerts' },
     report: {
       available: true,
       reason: null,
@@ -1013,7 +1013,55 @@ test('the IM row offers the discovered targets and explains an empty one', async
     },
   })
   assert.ok(ready.includes('imTest'), 'a configured target offers the test button')
-  assert.ok(ready.includes('release-alerts'), 'and names the target it would use')
+  // The placeholder is always in the list, so the honest question is which
+  // option the select actually shows: the chosen target, or the placeholder.
+  assert.match(ready, /<option value="release-alerts" selected/,
+    'a chosen target is the selected option')
+  assert.ok(!/<option value="" selected/.test(ready), 'not the placeholder')
+
+  // The regression: an unconfigured row must not LOOK configured. Falling back
+  // to the first bot filled the dropdown, so a user who only pressed the test
+  // button was told no bot was chosen.
+  const unconfigured = render({
+    config,
+    report: {
+      available: true,
+      reason: null,
+      bots: [{ botId: 'bot_1', channel: 'telegram', targets: [{ targetId: 'release-alerts', name: '发布提醒', kind: 'chat' }] }],
+    },
+  })
+  assert.match(unconfigured, /<option value="" selected/,
+    'nothing chosen shows the placeholder as the selected option')
+
+  // A bot that was removed upstream must not resurrect a stale selection either.
+  const stale = render({
+    config: { ...config, botId: 'bot_gone', targetId: 'whatever' },
+    report: {
+      available: true,
+      reason: null,
+      bots: [{ botId: 'bot_1', channel: 'telegram', targets: [{ targetId: 'release-alerts', name: '发布提醒', kind: 'chat' }] }],
+    },
+  })
+  assert.match(stale, /<option value="" selected/,
+    'a bot that no longer exists reads as unchosen, not as a stale selection')
+
+  // Two bots are needed for the bot dropdown to render at all; with one, the row
+  // shows a caption instead and a silent fallback to that bot cannot be seen.
+  const twoBots = {
+    available: true,
+    reason: null,
+    bots: [
+      { botId: 'bot_1', channel: 'telegram', targets: [{ targetId: 't1', name: 'T1', kind: 'chat' }] },
+      { botId: 'bot_2', channel: 'slack', targets: [{ targetId: 't2', name: 'T2', kind: 'chat' }] },
+    ],
+  }
+  // Both dropdowns carry a placeholder, so "a placeholder is selected" says
+  // nothing on its own; what must not happen is a REAL bot looking selected.
+  assert.ok(!/<option value="bot_[0-9a-z]+" selected/.test(render({ config, report: twoBots })),
+    'two bots, nothing chosen: no real bot is shown as selected')
+  assert.match(render({ config: { ...config, botId: 'bot_2', targetId: 't2' }, report: twoBots }),
+    /<option value="bot_2" selected/,
+    'two bots, bot_2 chosen: bot_2 is the selected bot')
 
   const empty = render({ config, report: { available: true, reason: 'no bot', bots: [] } })
   assert.ok(empty.includes('no bot'), 'the reason is shown instead of an empty picker')

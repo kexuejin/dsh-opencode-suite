@@ -246,6 +246,8 @@ window.__ModuleLoader__.load({
       imBot: '机器人',
       imTarget: '投递目标',
       imNone: '没有可选的机器人',
+      imPickBot: '选择机器人…',
+      imPickTarget: '选择目标…',
       imTest: '发条测试',
       imTesting: '发送中…',
       imSent: '已发出',
@@ -490,6 +492,8 @@ window.__ModuleLoader__.load({
       imBot: 'Bot',
       imTarget: 'Target',
       imNone: 'No bot to choose from',
+      imPickBot: 'Choose a bot…',
+      imPickTarget: 'Choose a target…',
       imTest: 'Send a test',
       imTesting: 'Sending…',
       imSent: 'Sent',
@@ -1747,11 +1751,14 @@ window.__ModuleLoader__.load({
       const { t, report, config, busy, onPick, onTest, testing } = props
       const bots = report && Array.isArray(report.bots) ? report.bots : []
       const withTargets = bots.filter(bot => bot.targets.length > 0)
-      const selectedBot = config.botId
-      const bot = bots.find(candidate => candidate.botId === selectedBot) ?? withTargets[0] ?? null
-      const targetId = config.targetId && bot && bot.targets.some(t2 => t2.targetId === config.targetId)
+      // Only what was actually written counts as selected. Falling back to the
+      // first bot made an unconfigured row LOOK configured — the user saw a
+      // filled dropdown, clicked test, and was told no bot was chosen.
+      const bot = withTargets.find(candidate => candidate.botId === config.botId) ?? null
+      const targetId = bot && bot.targets.some(candidate => candidate.targetId === config.targetId)
         ? config.targetId
-        : (bot && bot.targets[0] ? bot.targets[0].targetId : '')
+        : ''
+      const chosen = bot !== null && targetId !== ''
       const ready = report && report.available && withTargets.length > 0
       return React.createElement('div', { style: styles.barRow },
         React.createElement('div', { style: styles.fieldRow },
@@ -1782,24 +1789,31 @@ window.__ModuleLoader__.load({
                       const next = withTargets.find(candidate => candidate.botId === event.target.value)
                       onPick({ botId: event.target.value, targetId: next && next.targets[0] ? next.targets[0].targetId : '' })
                     },
-                  }, withTargets.map(candidate => React.createElement('option', {
-                    key: candidate.botId,
-                    value: candidate.botId,
-                  }, `${candidate.channel} · ${candidate.botId}`)))
-                : React.createElement('span', { style: styles.hint }, `${t('imBot')}: ${bot.channel}`),
+                  },
+                  [React.createElement('option', { key: '', value: '' }, t('imPickBot'))]
+                    .concat(withTargets.map(candidate => React.createElement('option', {
+                      key: candidate.botId,
+                      value: candidate.botId,
+                    }, `${candidate.channel} · ${candidate.botId}`))))
+                : React.createElement('span', { style: styles.hint },
+                  bot ? `${t('imBot')}: ${bot.channel}` : `${t('imBot')}: ${t('imNone')}`),
               React.createElement('select', {
                 style: styles.input,
                 value: targetId,
                 disabled: busy !== null && busy !== undefined,
-                onChange: event => onPick({ botId: bot.botId, targetId: event.target.value }),
-              }, (bot ? bot.targets : []).map(target => React.createElement('option', {
-                key: target.targetId,
-                value: target.targetId,
-              }, target.name))),
+                onChange: event => onPick({ botId: bot === null ? '' : bot.botId, targetId: event.target.value }),
+              },
+              [React.createElement('option', { key: '', value: '' }, t('imPickTarget'))]
+                .concat(bot ? bot.targets.map(target => React.createElement('option', {
+                  key: target.targetId,
+                  value: target.targetId,
+                }, target.name)) : [])),
               React.createElement('button', {
                 style: styles.button,
                 disabled: testing === true || (busy !== null && busy !== undefined),
-                onClick: onTest,
+                // Sending what the row shows: a pick is written first, so the
+                // first click of this button is also the choice.
+                onClick: () => onTest({ botId: bot === null ? '' : bot.botId, targetId }),
               }, testing === true ? t('imTesting') : t('imTest')),
             )
           : null,
@@ -2325,17 +2339,26 @@ window.__ModuleLoader__.load({
         }), null).then(load)
       }
 
-      const onImTest = () => {
+      const onImTest = (selection) => {
         setImTesting(true)
         ;(async () => {
           try {
             const remote = await api()
             if (!remote) throw new Error('opencodeSuite remote is unavailable')
+            const current = data && data.imNotify ? data.imNotify : { botId: '', targetId: '' }
+            const wanted = { botId: selection.botId ?? '', targetId: selection.targetId ?? '' }
+            if (wanted.botId !== current.botId || wanted.targetId !== current.targetId) {
+              await unwrapRemote(await remote.putConfig({
+                notifyImBotId: wanted.botId,
+                notifyImTargetId: wanted.targetId,
+              }))
+            }
             // Positional, and never omitted: the client binder counts call
             // arguments against the descriptor and refuses a short call, which
             // the host's acceptsUndefined does not relax. An empty body means
             // "send what the watcher would send", which the service decides.
             setImResult(unwrapRemote(await remote.testImNotify('')))
+            await load()
           } catch (err) {
             setImResult({ sent: false, error: String((err && err.message) || err) })
           } finally {
