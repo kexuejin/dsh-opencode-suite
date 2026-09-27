@@ -1705,6 +1705,10 @@ export class OpenCodeSuite extends TypertRemoteService {
       }),
       freeTier,
       modelWatch: this.modelWatchReport(),
+      // The card's own reading of the Config, so a write that silently failed
+      // shows up here rather than as a control that appears to do nothing.
+      usageLogEnabled: this.current().usageLogEnabled !== false,
+      usageLogSource: this.current().usageLogSource === 'log' ? 'log' : 'live',
       imNotify: {
         enabled: this.current().notifyImEnabled === true,
         botId: this.current().notifyImBotId ?? '',
@@ -1874,49 +1878,29 @@ export class OpenCodeSuite extends TypertRemoteService {
   }
 
   /** Update the card-visible pool and catalog settings (never keys). */
+  /**
+   * Write Config fields the card owns.
+   *
+   * The patch goes to the settings service as it arrives: that service validates
+   * it against this plugin's LIVE Config schema, including the volatile-field
+   * rule, so a new Config field works the moment it is declared and a typo is
+   * refused by name. Re-deriving the field list here is what made a card
+   * control fail with "no known fields" while its Config field existed — the
+   * three lists (Config, wire codec, this method) drifted apart.
+   *
+   * Only the two rules a schema cannot express are enforced here: unique,
+   * non-blank model ids, and a custom model selection that actually selects.
+   * @param config - the fields to merge.
+   * @throws {Error} naming the rule when either check fails.
+   */
   async putConfig(config) {
-    if (!config || typeof config !== 'object') throw new Error('putConfig needs an object')
-    const patch = {}
-    if (config.preemptAtPercent !== undefined) {
-      const value = Number(config.preemptAtPercent)
-      if (!Number.isFinite(value) || value < 0 || value > 100) throw new Error('preemptAtPercent must be 0..100')
-      patch.preemptAtPercent = value
+    if (!config || typeof config !== 'object' || Array.isArray(config)) {
+      throw new Error('putConfig needs a plain object of Config fields')
     }
-    if (config.switchAfterConsecutiveFailures !== undefined) {
-      const value = Number(config.switchAfterConsecutiveFailures)
-      if (!Number.isFinite(value) || value < 0 || value > 20) {
-        throw new Error('switchAfterConsecutiveFailures must be 0..20')
-      }
-      patch.switchAfterConsecutiveFailures = value
-    }
-    if (config.modelMode !== undefined) {
-      if (config.modelMode !== 'all' && config.modelMode !== 'custom') {
-        throw new Error('modelMode must be "all" or "custom"')
-      }
-      patch.modelMode = config.modelMode
-    }
-    if (config.models !== undefined) patch.models = assertIdList(config.models, 'models')
-    if (config.imageModels !== undefined) patch.imageModels = assertIdList(config.imageModels, 'imageModels')
-    if (config.modelCapacities !== undefined) {
-      const capacities = {}
-      if (typeof config.modelCapacities !== 'object' || Array.isArray(config.modelCapacities)) {
-        throw new Error('modelCapacities must be an object keyed by model id')
-      }
-      for (const [id, value] of Object.entries(config.modelCapacities)) {
-        if (id.trim().length === 0 || value === null || typeof value !== 'object') {
-          throw new Error('modelCapacities entries must be objects keyed by a non-empty model id')
-        }
-        const contextWindow = Number(value.contextWindow)
-        const maxTokens = Number(value.maxTokens)
-        if (!Number.isInteger(contextWindow) || contextWindow < 1
-            || !Number.isInteger(maxTokens) || maxTokens < 1) {
-          throw new Error(`modelCapacities["${id}"] needs positive integer contextWindow and maxTokens`)
-        }
-        capacities[id.trim()] = { contextWindow, maxTokens }
-      }
-      patch.modelCapacities = capacities
-    }
-    if (Object.keys(patch).length === 0) throw new Error('putConfig received no known fields')
+    if (Object.keys(config).length === 0) throw new Error('putConfig received an empty patch')
+    const patch = { ...config }
+    if (patch.models !== undefined) patch.models = assertIdList(patch.models, 'models')
+    if (patch.imageModels !== undefined) patch.imageModels = assertIdList(patch.imageModels, 'imageModels')
     const effective = { ...this.current(), ...patch }
     if (effective.modelMode === 'custom'
         && (!Array.isArray(effective.models) || effective.models.length === 0)) {
@@ -1926,7 +1910,6 @@ export class OpenCodeSuite extends TypertRemoteService {
     return true
   }
 
-  /** Update the session-header block from the card. */
   async putSessionHeaders(patch) {
     if (!patch || typeof patch !== 'object') throw new Error('putSessionHeaders needs an object')
     const candidate = { ...this.sessionConfig() }

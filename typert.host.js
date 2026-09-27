@@ -254,13 +254,30 @@ const keyInputSchema = z.object({
   apiKeyEnv: z.string(),
 })
 
+// A strict codec STRIPS keys it does not declare, so a field the card sends and
+// this object does not list arrives at the service already gone — the card then
+// fails with an empty patch. Every Config field a control can write belongs
+// here; test/remote-convention.test.mjs fails when one is missing.
 const configPatchSchema = z.object({
-  preemptAtPercent: z.number().optional(),
-  switchAfterConsecutiveFailures: z.number().optional(),
-  modelMode: z.string().optional(),
+  // The ranges mirror the Config schema, so a card control is refused here with
+  // the exact field named instead of travelling to the settings service first.
+  preemptAtPercent: z.number().min(0).max(100).optional(),
+  switchAfterConsecutiveFailures: z.number().min(0).max(20).optional(),
+  modelMode: z.enum(['all', 'custom']).optional(),
   models: z.array(z.string()).optional(),
   imageModels: z.array(z.string()).optional(),
   modelCapacities: z.record(z.string(), capacitySchema).optional(),
+  usageLogEnabled: z.boolean().optional(),
+  usageLogSource: z.enum(['live', 'log']).optional(),
+  usageLogWindowDays: z.number().int().min(1).max(365).optional(),
+  usageLogRetentionDays: z.number().int().min(1).max(3650).optional(),
+  usageLogSessionsPerSweep: z.number().int().min(1).max(5000).optional(),
+  usageLogSweepMaxMs: z.number().int().min(200).max(120000).optional(),
+  modelWatchEnabled: z.boolean().optional(),
+  modelWatchIntervalMs: z.number().int().min(300000).max(86400000).optional(),
+  notifyImEnabled: z.boolean().optional(),
+  notifyImBotId: z.string().optional(),
+  notifyImTargetId: z.string().optional(),
 })
 
 const sessionHeadersPatchSchema = z.object({

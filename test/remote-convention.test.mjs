@@ -108,3 +108,47 @@ test('a scalar parameter never receives an object literal', () => {
     })
   }
 })
+
+/**
+ * The field names of an object literal, at any nesting depth so a
+ * conditional spread (`...(x ? {} : { field: v })`) still reports its field.
+ * What keeps a ternary branch from being read as a field is the preceding
+ * character: a field name always follows `{` or `,`, while `? false : value`
+ * puts the branch right after `?`.
+ */
+function objectKeys(text) {
+  const keys = new Set()
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    if (char !== '{' && char !== ',') continue
+    const rest = text.slice(index + 1)
+    const match = /^\s*\.\.\.([A-Za-z][A-Za-z0-9]*)/.exec(rest)
+    if (match !== null) { keys.add(match[1]); continue }
+    const named = /^\s*([A-Za-z][A-Za-z0-9]*)\s*:/.exec(rest)
+    if (named !== null) keys.add(named[1])
+  }
+  return keys
+}
+
+test('every Config field the card writes survives the wire codec', () => {
+  // The card sends putConfig patches as object literals, so the call sites are
+  // the field list. A strict codec strips what it does not declare, and a field
+  // missing from BOTH the codec and the service's own filter used to fail at
+  // click time with "putConfig received no known fields" while its Config field
+  // existed all along.
+  const invocation = TYPERT.invocations.find(inv => inv.method === 'putConfig')
+  const codec = invocation.parameters.find(parameter => parameter.name === 'config').codec.create()
+  const shape = codec.shape ?? codec._zod?.def?.shape
+  assert.ok(shape !== undefined, 'the config codec exposes its fields')
+
+  const writes = callSites().filter(site => site.method === 'putConfig')
+  assert.ok(writes.length >= 3, `the page writes config in ${writes.length} places`)
+  const declared = new Set(Object.keys(shape))
+  for (const write of writes) {
+    for (const key of objectKeys(write.args)) {
+      assert.ok(declared.has(key),
+        `the card writes putConfig.${key}, which the wire codec does not declare — it would be stripped`
+        + ' before the service ever saw it')
+    }
+  }
+})

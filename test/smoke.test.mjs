@@ -715,14 +715,36 @@ test('putConfig validates thresholds, lists, and the custom-mode invariant', asy
   await plugin.putConfig({ preemptAtPercent: 95 })
   assert.equal((await plugin.status()).preemptAtPercent, 95)
 
-  await assert.rejects(() => plugin.putConfig({ preemptAtPercent: 101 }), /0\.\.100/)
-  await assert.rejects(() => plugin.putConfig({ switchAfterConsecutiveFailures: 21 }), /0\.\.20/)
-  await assert.rejects(() => plugin.putConfig({ modelMode: 'sometimes' }), /"all" or "custom"/)
+  // Range and enum refusal now belongs to the wire codec (test/typert-manifest
+  // asserts it there, with the exact field named) and to the live Config schema
+  // the settings service validates against. What the SERVICE still owns is what
+  // no schema can express: list hygiene, the custom-mode invariant, an empty
+  // patch, and a field that is not Config at all.
   await assert.rejects(() => plugin.putConfig({ models: ['ok', '  '] }), /non-empty/)
-  await assert.rejects(() => plugin.putConfig({ modelCapacities: { m: { contextWindow: 0, maxTokens: 1 } } }), /positive integer/)
-  await assert.rejects(() => plugin.putConfig({}), /no known fields/)
-  // Custom mode with nothing selected would expose an empty catalog.
+  // Duplicates are normalized away rather than refused, and the trimmed set is
+  // what lands.
+  await plugin.putConfig({ models: ['  keep  ', 'keep'] })
+  assert.deepEqual(plugin.current().models, ['keep'], 'a duplicated id lands once, trimmed')
+  // Custom mode with nothing selected would expose an empty catalog. Checked
+  // after the id list is cleared, since the invariant is about the EFFECTIVE
+  // config rather than the patch alone.
+  await plugin.putConfig({ models: [] })
   await assert.rejects(() => plugin.putConfig({ modelMode: 'custom' }), /at least one model/)
+  await assert.rejects(() => plugin.putConfig({}), /empty patch/)
+  // A field outside the Config is the LIVE settings service's refusal ("Config
+  // field ... is not volatile"); the double here does not validate, so the
+  // property worth proving in this harness is the opposite one: every field a
+  // card control writes must actually reach the plugin.
+  for (const [patch, read] of [
+    [{ usageLogEnabled: false }, status => status.usageLogEnabled],
+    [{ usageLogSource: 'log' }, status => status.usageLogSource],
+    [{ notifyImEnabled: true }, status => status.imNotify.enabled],
+    [{ notifyImBotId: 'bot_1', notifyImTargetId: 'release-alerts' }, status => status.imNotify.targetId],
+  ]) {
+    await plugin.putConfig(patch)
+    assert.equal(read(await plugin.status()), Object.values(patch)[Object.keys(patch).length - 1],
+      `putConfig ${JSON.stringify(patch)} landed`)
+  }
   await root.fiber.dispose()
 })
 
