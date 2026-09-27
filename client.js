@@ -1780,7 +1780,11 @@ window.__ModuleLoader__.load({
           : null,
         ready
           ? React.createElement('div', { style: styles.row },
-              withTargets.length > 1
+              // The bot select renders whenever a bot EXISTS, not only when
+              // there are two or more: with a single bot it was drawn as a
+              // caption, which left the row with no way to choose it at all —
+              // and the caption claimed there was none.
+              withTargets.length > 0
                 ? React.createElement('select', {
                     style: styles.input,
                     value: bot ? bot.botId : '',
@@ -1795,8 +1799,7 @@ window.__ModuleLoader__.load({
                       key: candidate.botId,
                       value: candidate.botId,
                     }, `${candidate.channel} · ${candidate.botId}`))))
-                : React.createElement('span', { style: styles.hint },
-                  bot ? `${t('imBot')}: ${bot.channel}` : `${t('imBot')}: ${t('imNone')}`),
+                : React.createElement('span', { style: styles.hint }, t('imNone')),
               React.createElement('select', {
                 style: styles.input,
                 value: targetId,

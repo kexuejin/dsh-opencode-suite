@@ -1032,6 +1032,20 @@ test('the IM row offers the discovered targets and explains an empty one', async
   })
   assert.match(unconfigured, /<option value="" selected/,
     'nothing chosen shows the placeholder as the selected option')
+  // ONE bot must still be selectable: the regression that made this row
+  // unusable rendered the bot dropdown only when there were two or more, and
+  // captioned a single bot as "no bot" while one was listed.
+  const oneBot = {
+    available: true,
+    reason: null,
+    bots: [{ botId: 'bot_1', channel: 'weixin', targets: [{ targetId: 'release-alerts', name: 'Ops', kind: 'chat' }] }],
+  }
+  const single = unconfigured.replace('', '')
+  assert.ok(!/imNone/.test(single), 'a single bot is never captioned as none')
+  assert.match(single, /<option value="bot_1"/,
+    'a single bot is offered in the bot dropdown')
+  assert.match(render({ config, report: oneBot }), /<option value="bot_1"/,
+    'one bot, nothing chosen: the bot is still selectable')
 
   // A bot that was removed upstream must not resurrect a stale selection either.
   const stale = render({
