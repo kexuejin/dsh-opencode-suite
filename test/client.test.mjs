@@ -157,7 +157,7 @@ test('every Remote descriptor carries strict codecs (client binder requirement)'
   if (!loaded) return
   const { TYPERT_REMOTE } = loaded.module.__test
   assert.equal(TYPERT_REMOTE.package, 'dsh-opencode-suite')
-  assert.equal(TYPERT_REMOTE.descriptors.length, 17)
+  assert.equal(TYPERT_REMOTE.descriptors.length, 19)
   for (const descriptor of TYPERT_REMOTE.descriptors) {
     assert.equal(descriptor.result.mode, 'strict', `${descriptor.method} result must be strict`)
     assert.equal(typeof descriptor.result.schema.parse, 'function')
@@ -990,4 +990,45 @@ test('the dock registers into the composer slot behind the stats pills', async (
   await new Promise(resolve => setTimeout(resolve, 10))
   assert.deepEqual(remote.calls.filter(call => call[0] === 'dismissModelNews'), [],
     'and the host was never told to clear its work list')
+})
+
+test('the IM row offers the discovered targets and explains an empty one', async (t) => {
+  const react = await loadReact(t)
+  const loaded = await loadModule(t)
+  if (!loaded || react === null) return
+  const { React, renderToString } = react
+  const { ImNotifyRow: Row } = loaded.module.__test
+  const render = props => renderToString(React.createElement(Row, {
+    t: key => key, busy: null, testing: false, onPick: () => {}, onTest: () => {},
+    ...props,
+  }))
+  const config = { enabled: false, botId: '', targetId: '' }
+
+  const ready = render({
+    config,
+    report: {
+      available: true,
+      reason: null,
+      bots: [{ botId: 'bot_1', channel: 'telegram', targets: [{ targetId: 'release-alerts', name: '发布提醒', kind: 'chat' }] }],
+    },
+  })
+  assert.ok(ready.includes('imTest'), 'a configured target offers the test button')
+  assert.ok(ready.includes('release-alerts'), 'and names the target it would use')
+
+  const empty = render({ config, report: { available: true, reason: 'no bot', bots: [] } })
+  assert.ok(empty.includes('no bot'), 'the reason is shown instead of an empty picker')
+  assert.ok(!empty.includes('imTest'), 'and there is nothing to test')
+
+  const absent = render({ config, report: { available: false, reason: 'dsh-im is not enabled', bots: [] } })
+  assert.ok(absent.includes('dsh-im is not enabled'), 'a missing plugin reads as missing, not as empty')
+
+  const failed = render({
+    config,
+    report: { available: true, reason: null, bots: [{ botId: 'bot_1', channel: 'telegram', targets: [{ targetId: 't', name: 'T', kind: 'chat' }] }] },
+    lastResult: { sent: false, error: 'unauthorized' },
+  })
+  // The identity `t` returns the key, so this asserts the failure row exists
+  // rather than the interpolated copy; the real dictionary carries {error}.
+  assert.ok(failed.includes('imFailed'), 'a refused send renders its failure row on the card')
+  assert.ok(!failed.includes('imSent'), 'and is never dressed up as sent')
 })

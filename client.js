@@ -240,6 +240,17 @@ window.__ModuleLoader__.load({
       dockSourceLive: '实时',
       dockSourceLog: '会话日志',
       dockFailed: '统计读取失败',
+      imTitle: 'IM 推送',
+      imHint: '发现新模型时，用 IM 插件已配好的投递目标主动发一条消息。机器人和目标在「设置 → IM 机器人」里建，本页只负责选。',
+      imEnable: '推送上新消息',
+      imBot: '机器人',
+      imTarget: '投递目标',
+      imNone: '没有可选的机器人',
+      imTest: '发条测试',
+      imTesting: '发送中…',
+      imSent: '已发出',
+      imFailed: '发送失败：{error}',
+      imLastResult: '上次结果：{result}',
       newsTitle: '模型上新提醒',
       newsHint: '后台每 {minutes} 分钟核对一次两档线上列表。下面是还没处理的变动。',
       newsNew: '新上线',
@@ -473,6 +484,17 @@ window.__ModuleLoader__.load({
       dockSourceLive: 'live',
       dockSourceLog: 'session log',
       dockFailed: 'usage unavailable',
+      imTitle: 'IM push',
+      imHint: 'Sends one message over a delivery target dsh-im already has when a new model appears. Bots and targets are created in Settings → IM 机器人; this page only picks one.',
+      imEnable: 'Push new-model news',
+      imBot: 'Bot',
+      imTarget: 'Target',
+      imNone: 'No bot to choose from',
+      imTest: 'Send a test',
+      imTesting: 'Sending…',
+      imSent: 'Sent',
+      imFailed: 'Send failed: {error}',
+      imLastResult: 'Last result: {result}',
       newsTitle: 'New models',
       newsHint: 'Both tiers\' online listings are checked every {minutes} minutes in the background. Here is what is still unhandled.',
       newsNew: 'new online',
@@ -536,6 +558,8 @@ window.__ModuleLoader__.load({
       descriptors: [
         DESCRIPTOR('status', []),
         DESCRIPTOR('usageBreakdown', ['days']),
+        DESCRIPTOR('imTargets', []),
+        DESCRIPTOR('testImNotify', ['text']),
         DESCRIPTOR('checkModels', []),
         DESCRIPTOR('dismissModelNews', ['tier']),
         DESCRIPTOR('takeOverState', []),
@@ -1719,8 +1743,81 @@ window.__ModuleLoader__.load({
       )
     }
 
+    function ImNotifyRow(props) {
+      const { t, report, config, busy, onPick, onTest, testing } = props
+      const bots = report && Array.isArray(report.bots) ? report.bots : []
+      const withTargets = bots.filter(bot => bot.targets.length > 0)
+      const selectedBot = config.botId
+      const bot = bots.find(candidate => candidate.botId === selectedBot) ?? withTargets[0] ?? null
+      const targetId = config.targetId && bot && bot.targets.some(t2 => t2.targetId === config.targetId)
+        ? config.targetId
+        : (bot && bot.targets[0] ? bot.targets[0].targetId : '')
+      const ready = report && report.available && withTargets.length > 0
+      return React.createElement('div', { style: styles.barRow },
+        React.createElement('div', { style: styles.fieldRow },
+          React.createElement('strong', null, t('imTitle')),
+          React.createElement('label', { style: styles.fieldRow },
+            React.createElement('input', {
+              type: 'checkbox',
+              style: styles.check,
+              checked: config.enabled === true,
+              disabled: busy !== null && busy !== undefined,
+              onChange: () => onPick({ enabled: !config.enabled }),
+            }),
+            t('imEnable'),
+          ),
+        ),
+        React.createElement('p', { style: styles.hint }, t('imHint')),
+        report && report.reason
+          ? React.createElement('p', { style: styles.hint }, report.reason)
+          : null,
+        ready
+          ? React.createElement('div', { style: styles.row },
+              withTargets.length > 1
+                ? React.createElement('select', {
+                    style: styles.input,
+                    value: bot ? bot.botId : '',
+                    disabled: busy !== null && busy !== undefined,
+                    onChange: event => {
+                      const next = withTargets.find(candidate => candidate.botId === event.target.value)
+                      onPick({ botId: event.target.value, targetId: next && next.targets[0] ? next.targets[0].targetId : '' })
+                    },
+                  }, withTargets.map(candidate => React.createElement('option', {
+                    key: candidate.botId,
+                    value: candidate.botId,
+                  }, `${candidate.channel} · ${candidate.botId}`)))
+                : React.createElement('span', { style: styles.hint }, `${t('imBot')}: ${bot.channel}`),
+              React.createElement('select', {
+                style: styles.input,
+                value: targetId,
+                disabled: busy !== null && busy !== undefined,
+                onChange: event => onPick({ botId: bot.botId, targetId: event.target.value }),
+              }, (bot ? bot.targets : []).map(target => React.createElement('option', {
+                key: target.targetId,
+                value: target.targetId,
+              }, target.name))),
+              React.createElement('button', {
+                style: styles.button,
+                disabled: testing === true || (busy !== null && busy !== undefined),
+                onClick: onTest,
+              }, testing === true ? t('imTesting') : t('imTest')),
+            )
+          : null,
+        props.lastResult
+          ? React.createElement('p', {
+              style: { ...styles.hint, ...(props.lastResult.sent ? styles.noticeOk : styles.noticeErr) },
+            }, props.lastResult.sent
+              ? t('imSent')
+              : t('imFailed').replace('{error}', props.lastResult.error ?? 'unknown'))
+          : null,
+      )
+    }
+
     function ModelNewsCard(props) {
-      const { t, watch, busy, onCheck, onAdopt, onDismiss, checking } = props
+      const {
+        t, watch, busy, onCheck, onAdopt, onDismiss, checking,
+        im, imConfig, imResult, onImPick, onImTest, imTesting,
+      } = props
       const enabled = watch ? watch.enabled !== false : true
       const tiers = watch && watch.tiers ? watch.tiers : { go: { pending: [], gone: [] }, free: { pending: [], gone: [] } }
       const rows = ['go', 'free'].map(tierId => ({
@@ -1732,6 +1829,11 @@ window.__ModuleLoader__.load({
       const when = value => (value ? new Date(value).toLocaleString() : '')
 
       return React.createElement('div', { style: { ...styles.card, ...(rows.length > 0 ? styles.bannerWarn : null) } },
+        React.createElement(ImNotifyRow, {
+          t, report: im, config: imConfig, busy, onPick: onImPick, onTest: onImTest,
+          testing: imTesting, lastResult: imResult,
+        }),
+        React.createElement('div', { style: styles.divider }),
         React.createElement('div', { style: styles.cardHead },
           React.createElement('h3', { style: styles.cardName }, t('newsTitle')),
           React.createElement('div', { style: styles.row },
@@ -2022,6 +2124,9 @@ window.__ModuleLoader__.load({
       const [usageLoading, setUsageLoading] = React.useState(false)
       const [usageWindow, setUsageWindow] = React.useState(7)
       const [checkingModels, setCheckingModels] = React.useState(false)
+      const [im, setIm] = React.useState(null)
+      const [imResult, setImResult] = React.useState(null)
+      const [imTesting, setImTesting] = React.useState(false)
       const [refreshing, setRefreshing] = React.useState(false)
       const [fetching, setFetching] = React.useState(false)
       const [freeFetching, setFreeFetching] = React.useState(false)
@@ -2198,6 +2303,41 @@ window.__ModuleLoader__.load({
 
       const onToggleUsage = (on) => {
         runAction(async remote => remote.putConfig({ usageLogEnabled: on }), null).then(loadUsage)
+      }
+
+      const loadImTargets = React.useCallback(async () => {
+        try {
+          const remote = await api()
+          if (!remote) return
+          setIm(unwrapRemote(await remote.imTargets()))
+        } catch (err) {
+          setIm({ available: false, reason: String((err && err.message) || err), bots: [] })
+        }
+      }, [api])
+
+      React.useEffect(() => { loadImTargets() }, [loadImTargets])
+
+      const onImPick = (patch) => {
+        runAction(async remote => remote.putConfig({
+          notifyImEnabled: patch.enabled ?? (data && data.imNotify ? data.imNotify.enabled === true : false),
+          ...(patch.botId === undefined ? {} : { notifyImBotId: patch.botId }),
+          ...(patch.targetId === undefined ? {} : { notifyImTargetId: patch.targetId }),
+        }), null).then(load)
+      }
+
+      const onImTest = () => {
+        setImTesting(true)
+        ;(async () => {
+          try {
+            const remote = await api()
+            if (!remote) throw new Error('opencodeSuite remote is unavailable')
+            setImResult(unwrapRemote(await remote.testImNotify()))
+          } catch (err) {
+            setImResult({ sent: false, error: String((err && err.message) || err) })
+          } finally {
+            setImTesting(false)
+          }
+        })()
       }
 
       const onCheckModels = async () => {
@@ -2402,6 +2542,8 @@ window.__ModuleLoader__.load({
             React.createElement(ModelNewsCard, {
               t, watch: data.modelWatch, busy, checking: checkingModels,
               onCheck: onCheckModels, onAdopt: onAdoptNews, onDismiss: onDismissNews,
+              im, imConfig: data.imNotify ?? { enabled: false, botId: '', targetId: '' },
+              imResult, onImPick, onImTest, imTesting,
             }),
 
             React.createElement('div', { style: styles.divider }),
@@ -2573,6 +2715,7 @@ window.__ModuleLoader__.load({
       FreeTierCard,
       SessionCard,
       ModelNewsCard,
+      ImNotifyRow,
       DockPills,
       createDockState,
       UsageBreakdownCard,

@@ -18,6 +18,8 @@ const EXPECTED_METHODS = [
   'usageBreakdown',
   'checkModels',
   'dismissModelNews',
+  'imTargets',
+  'testImNotify',
   'takeOverState',
   'setActive',
   'setDisabled',
@@ -132,6 +134,9 @@ test('every result schema accepts the real service output', async (t) => {
     usageLogSweepMaxMs: 4000,
     modelWatchEnabled: true,
     modelWatchIntervalMs: 900000,
+    notifyImEnabled: false,
+    notifyImBotId: '',
+    notifyImTargetId: '',
   }
   // The 0.1.7 settings contract: this plugin owns no settings scope any more, it
   // keeps the Config references the Loader resolved and persists through
@@ -228,6 +233,16 @@ test('every result schema accepts the real service output', async (t) => {
   assert.equal(breakdown.windowDays, 30, 'the positional window reaches the service')
   validateResult('usageBreakdown', breakdown)
   validateResult('checkModels', await suite.checkModels())
+  // No dsh-im in this composition, and the report says so instead of pretending
+  // there is nowhere to push.
+  const targets = await suite.imTargets()
+  assert.equal(targets.available, false)
+  assert.match(targets.reason, /dsh-im/)
+  validateResult('imTargets', targets)
+  const delivery = await suite.testImNotify()
+  assert.equal(delivery.sent, false)
+  assert.match(delivery.error, /no IM bot/)
+  validateResult('testImNotify', delivery)
   validateResult('takeOverState', await suite.takeOverState())
   validateResult('freeTier', await suite.freeTier())
   validateResult('refreshModels', await suite.refreshModels())

@@ -77,7 +77,7 @@ import {
   withDeclaredInput,
 } from './catalog.js'
 import { FreeTierError, describeRevision, readRouteApiKeyEnv, readRouteModels, writeRouteModels } from './free-tier.js'
-import { ModelWatcher } from './model-watch.js'
+import { ModelWatcher, WATCHED_TIERS } from './model-watch.js'
 import {
   DEFAULT_HEADERS,
   InjectionLog,
@@ -216,6 +216,14 @@ export const Config = z.object({
   // model that ships overnight does not wait for a card poll to be noticed.
   modelWatchEnabled: z.boolean().default(true).volatile(),
   modelWatchIntervalMs: z.number().min(300000).max(86400000).default(DEFAULT_MODEL_WATCH_MS).volatile(),
+  // Push new-model news over the IM plugin's proactive delivery. The bot and
+  // its target are DISCOVERED through dsh-im (listBots / listTargets) and picked
+  // in the card, never hand-copied into a file; dsh-im owns creating them,
+  // because a bot needs platform credentials this plugin has no business
+  // holding.
+  notifyImEnabled: z.boolean().default(false).volatile(),
+  notifyImBotId: z.string().default('').volatile(),
+  notifyImTargetId: z.string().default('').volatile(),
   sessionHeaders: sessionHeadersSchema.volatile(),
 })
 
@@ -685,8 +693,133 @@ export class OpenCodeSuite extends TypertRemoteService {
     })
     if (notices.length > 0) {
       this.logger?.info?.(`opencode-suite: new online models: ${notices.join(', ')}`)
+      // Deliberately not awaited into the sweep: a slow or refused IM must not
+      // hold the listing check, and a failed push leaves the pending list, so
+      // the next new id tries again and the card shows what happened.
+      void this.pushModelNews(notices)
     }
     return { notices, pendingTotal: this.modelWatcher.pendingCount() }
+  }
+
+  /**
+   * The IM delivery targets this host can push to, discovered from dsh-im.
+   *
+   * A bot cannot be created here: it needs platform credentials (a Telegram
+   * token, a Feishu app, a WeChat login) that belong to dsh-im's own settings.
+   * What this plugin owns is the choice of where an already-configured target
+   * receives the news, so the card picks from this list instead of asking anyone
+   * to paste an id into a file.
+   * @returns `{available, reason, bots}` for the card's picker.
+   */
+  async imTargets() {
+    const im = this.ctx.get('dshIm')
+    if (im === undefined || im === null) {
+      return { available: false, reason: 'dsh-im is not enabled in this profile', bots: [] }
+    }
+    let bots
+    try {
+      bots = await im.listBots()
+    } catch (error) {
+      return { available: false, reason: messageOf(error), bots: [] }
+    }
+    const rows = []
+    for (const bot of Array.isArray(bots) ? bots : []) {
+      if (!bot || typeof bot.botId !== 'string') continue
+      let targets = []
+      try {
+        targets = await im.listTargets(bot.botId)
+      } catch (error) {
+        // One unreachable channel must not hide the channels that do answer.
+        this.logger?.debug?.(`opencode-suite: listTargets failed for ${bot.botId}: ${messageOf(error)}`)
+      }
+      rows.push({
+        botId: bot.botId,
+        channel: typeof bot.channel === 'string' ? bot.channel : 'unknown',
+        targets: (Array.isArray(targets) ? targets : [])
+          .filter(target => target && typeof target.targetId === 'string')
+          .map(target => ({
+            targetId: target.targetId,
+            name: typeof target.name === 'string' && target.name.length > 0 ? target.name : target.targetId,
+            kind: typeof target.kind === 'string' ? target.kind : 'unknown',
+          })),
+      })
+    }
+    const anyTarget = rows.some(row => row.targets.length > 0)
+    return {
+      available: true,
+      reason: anyTarget
+        ? null
+        : rows.length === 0
+          ? 'dsh-im has no bot in this profile — add one in Settings → IM 机器人'
+          : 'no delivery target is configured for any bot — add one on the bot card in Settings → IM 机器人',
+      bots: rows,
+    }
+  }
+
+  /**
+   * The text one push carries, built once so the test button and a real notice
+   * cannot drift apart.
+   * @param ids - the new model ids, newest notice last.
+   * @param heading - the first line.
+   * @returns the markdown body.
+   */
+  newsBody(ids, heading) {
+    const lines = [`**${heading}**`, '']
+    for (const id of ids) lines.push(`- \`${id}\``)
+    const gone = WATCHED_TIERS.flatMap(tierId => this.modelWatcher.gone(tierId))
+    if (gone.length > 0) lines.push('', `另有 ${gone.length} 个模型已从线上列表消失。`)
+    lines.push('', '在「设置 → OpenCode 套件」里上架或拉取。')
+    return lines.join('\n')
+  }
+
+  /**
+   * Send the news over the configured IM target, if one is chosen.
+   * @param ids - the new model ids.
+   * @returns `{sent, error}`; never throws, because a notification failure is
+   *   reported, not propagated into the listing check.
+   */
+  async pushModelNews(ids) {
+    const cfg = this.current()
+    if (cfg.notifyImEnabled !== true) return { sent: false, error: null }
+    if (ids.length === 0) return { sent: false, error: null }
+    return await this.deliver(cfg.notifyImBotId, cfg.notifyImTargetId, this.newsBody(ids, 'OpenCode 上新模型'))
+  }
+
+  /**
+   * One delivery attempt against dsh-im, with every known refusal named.
+   * @param botId - the configured bot.
+   * @param targetId - the configured delivery target.
+   * @param text - the message body.
+   * @returns `{sent, error}`.
+   */
+  async deliver(botId, targetId, text) {
+    const fail = reason => ({ sent: false, error: reason })
+    if (typeof botId !== 'string' || botId.length === 0) return fail('no IM bot is chosen')
+    if (typeof targetId !== 'string' || targetId.length === 0) return fail('no IM target is chosen')
+    const im = this.ctx.get('dshIm')
+    if (im === undefined || im === null) return fail('dsh-im is not enabled in this profile')
+    try {
+      const result = await im.send(botId, targetId, text, { format: 'markdown' })
+      if (result?.sent === true) return { sent: true, error: null }
+      return fail(`the IM plugin did not confirm the send: ${JSON.stringify(result ?? null)}`)
+    } catch (error) {
+      const code = error && error.code ? String(error.code) : null
+      return { sent: false, error: code === null ? messageOf(error) : `${code}: ${messageOf(error)}` }
+    }
+  }
+
+  /**
+   * The card's test button: send the news the watcher would send right now.
+   * @param {string} [text] - override the body.
+   * @returns `{sent, error}`.
+   */
+  async testImNotify(text) {
+    const cfg = this.current()
+    const ids = WATCHED_TIERS.flatMap(tierId => this.modelWatcher.pending(tierId).map(row => row.id))
+    const body = typeof text === 'string' && text.trim().length > 0
+      ? text
+      : this.newsBody(ids.length > 0 ? ids : ['grok-4.7'], 'OpenCode 上新模型（测试）')
+    return await this.deliver(cfg.notifyImBotId, cfg.notifyImTargetId, body)
   }
 
   /**
@@ -1572,6 +1705,11 @@ export class OpenCodeSuite extends TypertRemoteService {
       }),
       freeTier,
       modelWatch: this.modelWatchReport(),
+      imNotify: {
+        enabled: this.current().notifyImEnabled === true,
+        botId: this.current().notifyImBotId ?? '',
+        targetId: this.current().notifyImTargetId ?? '',
+      },
       sessionHeaders: {
         enabled: sessionCfg.enabled,
         providers: [...sessionCfg.providers],

@@ -72,7 +72,7 @@ function takesNumber(codec) {
   return def.type === 'number'
 }
 
-test('the page calls every remote method with as many arguments as it declares', () => {
+test('the page passes no more arguments than the descriptor declares, and omits only omissible ones', () => {
   const declared = new Map(TYPERT.invocations.map(inv => [inv.method, inv.parameters]))
   const sites = callSites()
   assert.ok(sites.length >= 10, `the page calls the remote in ${sites.length} places`)
@@ -80,9 +80,16 @@ test('the page calls every remote method with as many arguments as it declares',
     const parameters = declared.get(site.method)
     if (parameters === undefined) continue
     const args = splitArgs(site.args)
-    assert.equal(args.length, parameters.length,
+    assert.ok(args.length <= parameters.length,
       `remote.${site.method}() passes ${args.length} argument(s) but declares ${parameters.length}`
       + ' — the binder maps arguments onto wire fields in order')
+    // A TRAILING parameter may be left out only when the descriptor declares the
+    // omission: the gateway rejects a missing field otherwise.
+    const omitted = parameters.slice(args.length)
+    for (const parameter of omitted) {
+      assert.equal(parameter.acceptsUndefined, true,
+        `remote.${site.method}() omits "${parameter.name}", which the gateway does not allow omitting`)
+    }
   }
 })
 

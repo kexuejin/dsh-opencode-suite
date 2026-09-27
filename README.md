@@ -150,6 +150,9 @@ Every key is optional; the defaults are what the bundle patch inserts.
     usageLogSweepMaxMs: 4000       # wall clock one refresh may spend folding them
     modelWatchEnabled: true        # poll both listings for new / delisted ids
     modelWatchIntervalMs: 900000   # 15 min
+    notifyImEnabled: false         # push new-model news over the IM plugin
+    notifyImBotId: ''              # chosen in the card from listBots()
+    notifyImTargetId: ''           # chosen in the card from listTargets()
     sessionHeaders:
       enabled: true               # on by default
       nanoidSessionId: true

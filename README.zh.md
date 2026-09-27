@@ -131,6 +131,9 @@ Key 可以在设置页的「Key 管理」里加，也可以用 `oc_suite_pool` �
     usageLogSweepMaxMs: 4000       # 一次刷新最多花的墙钟时间
     modelWatchEnabled: true        # 后台核对两档列表的新增/下架
     modelWatchIntervalMs: 900000   # 15 分钟
+    notifyImEnabled: false         # 用 IM 插件推送上新消息
+    notifyImBotId: ''              # 在卡片里从 listBots() 选
+    notifyImTargetId: ''           # 在卡片里从 listTargets() 选
     sessionHeaders:
       enabled: true               # 默认开启
       nanoidSessionId: true
@@ -207,7 +210,11 @@ Key 可以在设置页的「Key 管理」里加，也可以用 `oc_suite_pool` �
 - 「知道了」清掉的是通知，不是「见过」的集合：被打消的 id 要等它下架再回来才会再通报。
 - 某一档请求失败只记为错误，不会挡住另一档。
 
-**不做的**：不会往任何聊天应用或通知服务推消息。页面横幅、工具输出、日志这三处就是全部。
+**推送到 IM。** 装了 IM 插件后，盯盘可以借它已配好的投递目标发一条消息：卡片直接列出
+`listBots()` × `listTargets()` 让你选，选择存在配置里，**不用把任何 id 抄进文件**。
+发现有新 id 的那一轮发一次（基线那轮静默，之后没有新东西也静默）。发失败不影响别的事 ——
+待处理清单还在，卡片照样显示该上架什么。本插件**不负责建机器人**：那需要平台凭据
+（Telegram token、飞书应用、微信登录），属于 IM 插件自己的设置。
 
 ## 本地用量：按天、按模型
 

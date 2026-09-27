@@ -163,6 +163,29 @@ const usageBreakdownSchema = z.object({
   totals: usageCountersSchema.extend({ days: z.number() }),
 })
 
+const imTargetSchema = z.object({
+  targetId: z.string(),
+  name: z.string(),
+  kind: z.string(),
+})
+
+const imBotSchema = z.object({
+  botId: z.string(),
+  channel: z.string(),
+  targets: z.array(imTargetSchema),
+})
+
+const imTargetsSchema = z.object({
+  available: z.boolean(),
+  reason: z.string().nullable(),
+  bots: z.array(imBotSchema),
+})
+
+const deliveryResultSchema = z.object({
+  sent: z.boolean(),
+  error: z.string().nullable(),
+})
+
 const modelNoticeSchema = z.object({
   id: z.string(),
   firstSeenAt: z.string(),
@@ -202,6 +225,11 @@ const suiteStatusSchema = z.object({
   keys: z.array(keyStatusSchema),
   freeTier: freeTierSchema,
   modelWatch: modelWatchSchema,
+  imNotify: z.object({
+    enabled: z.boolean(),
+    botId: z.string(),
+    targetId: z.string(),
+  }),
   sessionHeaders: sessionHeadersSchema,
 })
 
@@ -307,6 +335,16 @@ export const TYPERT = {
         acceptsUndefined: true,
       },
     ], strict('dsh-opencode-suite#UsageBreakdown', usageBreakdownSchema)),
+    invocation('imTargets', [], strict('dsh-opencode-suite#ImTargets', imTargetsSchema)),
+    invocation('testImNotify', [
+      {
+        name: 'text',
+        wire: 'text',
+        typeSymbol: 'dsh-opencode-suite#ImTestText',
+        schema: z.string().optional(),
+        acceptsUndefined: true,
+      },
+    ], strict('dsh-opencode-suite#DeliveryResult', deliveryResultSchema)),
     invocation('checkModels', [], strict('dsh-opencode-suite#ModelCheckResult', z.object({
       notices: z.array(z.string()),
       pendingTotal: z.number(),

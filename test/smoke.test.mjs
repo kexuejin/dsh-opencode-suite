@@ -1070,3 +1070,158 @@ test('the live counters survive a host restart through their own state file', as
   assert.equal(grown.totals.calls, 2, 'new turns add to the restored counters')
   await second.root.fiber.dispose()
 })
+
+/* ------------------------------------------------------------------ *
+ * IM delivery
+ * ------------------------------------------------------------------ */
+
+/** A dsh-im double: the same three methods the real plugin provides. */
+function imDouble({ bots = [{ botId: 'bot_1', channel: 'telegram' }], targets = {}, fail = null } = {}) {
+  const sent = []
+  return {
+    sent,
+    async send(botId, targetId, text, options) {
+      sent.push({ botId, targetId, text, options })
+      if (fail !== null) throw Object.assign(new Error('channel refused'), { code: fail })
+      return { sent: true }
+    },
+    async listBots() { return bots },
+    async listTargets(botId) { return targets[botId] ?? [] },
+  }
+}
+
+test('the card is offered the targets dsh-im already has, and picks one without any file', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const im = imDouble({ targets: { bot_1: [{ targetId: 'release-alerts', name: '发布提醒', kind: 'chat' }] } })
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context)
+  root.provide('dshIm', im)
+
+  const report = await plugin.imTargets()
+  assert.equal(report.available, true)
+  assert.equal(report.reason, null)
+  assert.deepEqual(report.bots.map(bot => bot.botId), ['bot_1'])
+  assert.deepEqual(report.bots[0].targets, [{ targetId: 'release-alerts', name: '发布提醒', kind: 'chat' }])
+  await root.fiber.dispose()
+})
+
+test('an empty or unreachable IM is reported as a reason, never as silence', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+
+  const none = await boot(harness.OpenCodeSuite, harness.Context)
+  const missing = await none.plugin.imTargets()
+  assert.equal(missing.available, false, 'no dsh-im in this profile')
+  assert.match(missing.reason, /dsh-im/)
+  await none.root.fiber.dispose()
+
+  const empty = await boot(harness.OpenCodeSuite, harness.Context)
+  empty.root.provide('dshIm', imDouble({ bots: [] }))
+  const noBot = await empty.plugin.imTargets()
+  assert.equal(noBot.available, true, 'dsh-im is there, it just has nothing configured')
+  assert.match(noBot.reason, /no bot/)
+  await empty.root.fiber.dispose()
+
+  const noTarget = await boot(harness.OpenCodeSuite, harness.Context)
+  noTarget.root.provide('dshIm', imDouble({ bots: [{ botId: 'bot_1', channel: 'slack' }], targets: {} }))
+  const report = await noTarget.plugin.imTargets()
+  assert.match(report.reason, /no delivery target/)
+  await noTarget.root.fiber.dispose()
+
+  // One channel that cannot answer must not hide the one that can.
+  const partial = await boot(harness.OpenCodeSuite, harness.Context)
+  const flaky = imDouble({ targets: { bot_2: [{ targetId: 't2', name: 'Ops', kind: 'chat' }] } })
+  flaky.listBots = async () => [{ botId: 'bot_1', channel: 'dead' }, { botId: 'bot_2', channel: 'slack' }]
+  flaky.listTargets = async botId => {
+    if (botId === 'bot_1') throw Object.assign(new Error('401'), { code: 'unauthorized' })
+    return [{ targetId: 't2', name: 'Ops', kind: 'chat' }]
+  }
+  partial.root.provide('dshIm', flaky)
+  const mixed = await partial.plugin.imTargets()
+  assert.deepEqual(mixed.bots.find(bot => bot.botId === 'bot_1').targets, [], 'the dead channel is empty, not fatal')
+  assert.equal(mixed.bots.find(bot => bot.botId === 'bot_2').targets.length, 1)
+  assert.equal(mixed.reason, null)
+  await partial.root.fiber.dispose()
+})
+
+test('the test button sends markdown to the chosen target and names every refusal', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const im = imDouble({ targets: { bot_1: [{ targetId: 'release-alerts', name: '发布提醒', kind: 'chat' }] } })
+
+  const off = await boot(harness.OpenCodeSuite, harness.Context)
+  off.root.provide('dshIm', im)
+  assert.deepEqual(await off.plugin.testImNotify(), { sent: false, error: 'no IM bot is chosen' })
+  assert.equal(im.sent.length, 0, 'nothing is sent before a target is chosen')
+  await off.root.fiber.dispose()
+
+  const on = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { notifyImEnabled: true, notifyImBotId: 'bot_1', notifyImTargetId: 'release-alerts' },
+  })
+  on.root.provide('dshIm', im)
+  const ok = await on.plugin.testImNotify()
+  assert.equal(ok.sent, true)
+  assert.equal(ok.error, null)
+  assert.equal(im.sent.length, 1)
+  assert.equal(im.sent[0].targetId, 'release-alerts')
+  assert.equal(im.sent[0].options.format, 'markdown')
+  assert.ok(im.sent[0].text.includes('OpenCode'), 'the test says what it is')
+  await on.root.fiber.dispose()
+
+  const refused = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { notifyImEnabled: true, notifyImBotId: 'bot_1', notifyImTargetId: 'release-alerts' },
+  })
+  refused.root.provide('dshIm', imDouble({ fail: 'unauthorized' }))
+  const failed = await refused.plugin.testImNotify()
+  assert.equal(failed.sent, false)
+  assert.match(failed.error, /unauthorized/, 'the channel code survives into the card')
+  await refused.root.fiber.dispose()
+})
+
+test('a pass that finds a new model pushes it once, and never pushes the baseline', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const im = imDouble({ targets: { bot_1: [{ targetId: 'release-alerts', name: '发布提醒', kind: 'chat' }] } })
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { notifyImEnabled: true, notifyImBotId: 'bot_1', notifyImTargetId: 'release-alerts' },
+  })
+  root.provide('dshIm', im)
+  const listings = { go: ['grok-4.7'], free: [] }
+  plugin.tierListing = async tierId => (listings[tierId] ?? []).map(id => ({ id, name: id }))
+
+  await plugin.checkModels({ fresh: true })
+  assert.equal(im.sent.length, 0, 'the baseline pass says nothing')
+
+  listings.go.push('glm-5.4')
+  await plugin.checkModels({ fresh: true })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(im.sent.length, 1, 'one push for one new id')
+  assert.ok(im.sent[0].text.includes('glm-5.4'), 'and it names the model')
+
+  // A later pass with nothing new must stay quiet rather than re-announce.
+  await plugin.checkModels({ fresh: true })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(im.sent.length, 1, 'the same id is not pushed twice')
+  await root.fiber.dispose()
+})
+
+test('a refused push leaves the work list intact for the card', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { notifyImEnabled: true, notifyImBotId: 'bot_1', notifyImTargetId: 'release-alerts' },
+  })
+  root.provide('dshIm', imDouble({ fail: 'rate-limited' }))
+  const listings = { go: ['grok-4.7'], free: [] }
+  plugin.tierListing = async tierId => (listings[tierId] ?? []).map(id => ({ id, name: id }))
+
+  await plugin.checkModels({ fresh: true })
+  listings.go.push('grok-4.8')
+  await plugin.checkModels({ fresh: true })
+  await new Promise(resolve => setImmediate(resolve))
+
+  const report = (await plugin.status()).modelWatch
+  assert.equal(report.tiers.go.pending.length, 1, 'the refused push did not consume the news')
+  assert.equal(report.error, null, 'and the listing check itself is unaffected')
+  await root.fiber.dispose()
+})
