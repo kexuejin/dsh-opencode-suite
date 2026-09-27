@@ -2103,7 +2103,10 @@ window.__ModuleLoader__.load({
         try {
           const remote = await api()
           if (!remote) throw new Error('opencodeSuite remote is unavailable')
-          const result = unwrapRemote(await remote.usageBreakdown({ days: usageWindow }))
+          // Positional: the binder maps call arguments onto the declared wire
+          // fields in order, so an object here would arrive as the VALUE of
+          // `days` and fail the host's boundary validation.
+          const result = unwrapRemote(await remote.usageBreakdown(usageWindow))
           setUsage(result)
           setUsageError(null)
         } catch (err) {

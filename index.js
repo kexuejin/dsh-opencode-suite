@@ -1592,17 +1592,21 @@ export class OpenCodeSuite extends TypertRemoteService {
   }
 
   /**
-   * Per-day, per-model token accounting folded from the session log, for the
-   * card and the agent tool.
+   * Per-day, per-model token accounting, for the card and the agent tool.
    *
    * A refresh sweeps the changed sessions under the configured budget and then
    * reports the requested window, so the answer carries its own completeness:
    * `sweep.complete` false means more sessions are still queued, not that the
    * numbers are wrong.
-   * @param request - `{ days? }`, the window to report; defaults to the configured one.
+   *
+   * The window arrives POSITIONALLY: the gateway validates the wire fields and
+   * then calls this method with the resolved values in declared order, so an
+   * object parameter here would be a number and `days` would silently stay
+   * undefined.
+   * @param days - the window to report; omitted or invalid falls back to the configured one.
    * @returns the window payload, with `error` naming why it is empty.
    */
-  async usageBreakdown({ days } = {}) {
+  async usageBreakdown(days) {
     const cfg = this.current()
     const source = cfg.usageLogSource === 'log' ? 'log' : 'live'
     const retention = Number.isSafeInteger(cfg.usageLogRetentionDays) && cfg.usageLogRetentionDays > 0

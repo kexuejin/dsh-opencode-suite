@@ -269,14 +269,22 @@ const freeTierEntrySchema = z.object({
 // plugin activation (every /api/opencodeSuite/* route answers 404).
 const strict = (typeSymbol, schema) => ({ mode: 'strict', typeSymbol, create: () => schema })
 
+// Every other descriptor field has to be named here: a parameter that omits a
+// field the gateway reads (such as `acceptsUndefined`, which is what makes an
+// optional field omissible) would otherwise be dropped on the floor, and the
+// symptom is a gateway error about a field nobody sent.
 const invocation = (method, parameters, result) => ({
   id: `dsh-opencode-suite#opencodeSuite/${method}`,
   service: 'opencodeSuite',
   namespace: 'opencodeSuite',
   method,
   invocation: { kind: 'direct' },
-  parameters: parameters.map(({ name, wire, typeSymbol, schema }) => ({
-    name, wire, source: 'json', codec: strict(typeSymbol, schema),
+  parameters: parameters.map(({ name, wire, typeSymbol, schema, acceptsUndefined }) => ({
+    name,
+    wire,
+    source: 'json',
+    codec: strict(typeSymbol, schema),
+    ...(acceptsUndefined === undefined ? {} : { acceptsUndefined }),
   })),
   result,
 })
@@ -293,6 +301,10 @@ export const TYPERT = {
         wire: 'days',
         typeSymbol: 'dsh-opencode-suite#UsageWindowDays',
         schema: z.number().int().min(1).max(365).optional(),
+        // The window is optional on the service too (it falls back to the
+        // configured one), so a caller may leave the field out entirely. The
+        // gateway rejects an omitted field unless the descriptor says so.
+        acceptsUndefined: true,
       },
     ], strict('dsh-opencode-suite#UsageBreakdown', usageBreakdownSchema)),
     invocation('checkModels', [], strict('dsh-opencode-suite#ModelCheckResult', z.object({

@@ -218,9 +218,14 @@ test('every result schema accepts the real service output', async (t) => {
   // with a schema-valid payload that says why it is empty.
   // The live source answers from what this host streamed, so it needs no
   // persistence seam at all.
-  const breakdown = await suite.usageBreakdown({ days: 7 })
+  const breakdown = await suite.usageBreakdown(30)
   assert.equal(breakdown.source, 'live')
   assert.equal(breakdown.error, null)
+  // The gateway calls a strict method with the resolved wire values IN ORDER,
+  // so a service that took an object here would drop the window silently. The
+  // window asserted differs from the configured 7, so "fell back to the
+  // default" cannot pass as "the argument arrived".
+  assert.equal(breakdown.windowDays, 30, 'the positional window reaches the service')
   validateResult('usageBreakdown', breakdown)
   validateResult('checkModels', await suite.checkModels())
   validateResult('takeOverState', await suite.takeOverState())
@@ -234,6 +239,11 @@ test('every result schema accepts the real service output', async (t) => {
   validateParam('usageBreakdown', 'days', 30)
   const badDays = invocations.get('usageBreakdown').parameters[0].codec.create().safeParse({ days: 'a week' })
   assert.equal(badDays.success, false, 'a wrong-typed window never reaches the service')
+  // An omitted window is legal end to end: the schema is optional, the
+  // descriptor declares it, and the service falls back to its configured one.
+  const days = invocations.get('usageBreakdown').parameters[0]
+  assert.equal(days.acceptsUndefined, true, 'the gateway allows omitting an optional field')
+  assert.equal(days.codec.create().parse(undefined), undefined)
   validateParam('putConfig', 'config', { preemptAtPercent: 50, models: ['a'], imageModels: ['a'], modelCapacities: { a: { contextWindow: 1, maxTokens: 1 } } })
   validateParam('putSessionHeaders', 'patch', { enabled: false, hosts: ['opencode.ai'], extraHeaders: { 'x-a': 'b' } })
   validateParam('putFreeTierModels', 'entries', [{ id: 'a', contextWindow: 1, maxTokens: 1, input: ['text'] }])

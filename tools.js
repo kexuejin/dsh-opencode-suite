@@ -300,7 +300,8 @@ function usageModelsTool(resolve) {
     async execute(args) {
       try {
         const days = args && Number.isSafeInteger(args.days) && args.days > 0 ? args.days : undefined
-        const result = await requireSuite(resolve).usageBreakdown(days === undefined ? {} : { days })
+        // The service takes the window positionally, the way the gateway calls it.
+        const result = await requireSuite(resolve).usageBreakdown(days)
         if (args && args.perDay === false) return { ...result, days: [] }
         return result
       } catch (error) {

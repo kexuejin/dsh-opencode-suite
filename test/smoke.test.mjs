@@ -1020,7 +1020,7 @@ test('the live source accounts a streamed call while session headers still scope
   })())) chunks.push(chunk)
 
   assert.equal(chunks.length, 3, 'every chunk reaches the consumer untouched')
-  const report = await plugin.usageBreakdown({ days: 1 })
+  const report = await plugin.usageBreakdown(1)
   assert.equal(report.source, 'live')
   assert.equal(report.error, null)
   assert.equal(report.totals.calls, 1)
@@ -1035,7 +1035,7 @@ test('the log source is what reads the session log, and the two are exclusive', 
   const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
     config: { usageLogSource: 'log' },
   })
-  const empty = await plugin.usageBreakdown({ days: 1 })
+  const empty = await plugin.usageBreakdown(1)
   assert.equal(empty.source, 'log')
   // No persistence seam in this composition, and it says why instead of
   // pretending the history is empty.
@@ -1056,17 +1056,17 @@ test('the live counters survive a host restart through their own state file', as
   const first = await boot(harness.OpenCodeSuite, harness.Context)
   await stream(first.plugin, { inputTokens: 100, outputTokens: 20, cacheReadTokens: 9000 })
   first.plugin.flushUsageState()
-  const before = await first.plugin.usageBreakdown({ days: 1 })
+  const before = await first.plugin.usageBreakdown(1)
   assert.equal(before.totals.calls, 1)
   await first.root.fiber.dispose()
 
   // A second host over the same DSH_HOME: the day's totals are still there.
   const second = await boot(harness.OpenCodeSuite, harness.Context)
-  const after = await second.plugin.usageBreakdown({ days: 1 })
+  const after = await second.plugin.usageBreakdown(1)
   assert.equal(after.totals.calls, 1, 'a restart must not erase the day')
   assert.equal(after.totals.cacheRead, 9000)
   await stream(second.plugin, { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0 })
-  const grown = await second.plugin.usageBreakdown({ days: 1 })
+  const grown = await second.plugin.usageBreakdown(1)
   assert.equal(grown.totals.calls, 2, 'new turns add to the restored counters')
   await second.root.fiber.dispose()
 })
