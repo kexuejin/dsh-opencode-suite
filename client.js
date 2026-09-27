@@ -2331,7 +2331,11 @@ window.__ModuleLoader__.load({
           try {
             const remote = await api()
             if (!remote) throw new Error('opencodeSuite remote is unavailable')
-            setImResult(unwrapRemote(await remote.testImNotify()))
+            // Positional, and never omitted: the client binder counts call
+            // arguments against the descriptor and refuses a short call, which
+            // the host's acceptsUndefined does not relax. An empty body means
+            // "send what the watcher would send", which the service decides.
+            setImResult(unwrapRemote(await remote.testImNotify('')))
           } catch (err) {
             setImResult({ sent: false, error: String((err && err.message) || err) })
           } finally {
