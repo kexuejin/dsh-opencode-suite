@@ -7,10 +7,10 @@
 - 挂在一条 OpenCode Zen 路由后面的多 Key 池，额度感知、自动切换
 - 按会话注入请求头，供网关做粘滞与统计
 - 两档 Zen 模型目录在一张卡里双向管理
-- 用量看板，以及管以上全部的六个 Agent 工具
+- 用量看板，以及管以上全部的七个 Agent 工具
 
 一行插件配置、一个 settings 命名空间（`opencode-suite`）、一个 Remote
-（`opencodeSuite`）、一个设置页、六个 Agent 工具。
+（`opencodeSuite`）、一个设置页、七个 Agent 工具。
 
 ```sh
 dsh plugin --profile <name> add dsh-opencode-suite

@@ -7,10 +7,10 @@ It covers four things that would otherwise be four separate installs:
 - a pooled, quota-aware key rotator behind one OpenCode Zen route
 - per-session request headers for gateway affinity and accounting
 - both Zen model tiers managed from one card, in both directions
-- a usage dashboard and six agent tools for all of the above
+- a usage dashboard and seven agent tools for all of the above
 
 One plugin row, one settings namespace (`opencode-suite`), one Remote
-(`opencodeSuite`), one settings page, six agent tools.
+(`opencodeSuite`), one settings page, seven agent tools.
 
 ```sh
 dsh plugin --profile <name> add dsh-opencode-suite
