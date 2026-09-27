@@ -233,6 +233,13 @@ window.__ModuleLoader__.load({
       usageEmpty: '这个窗口里没有任何模型调用。',
       usageEmptyHint: '新 profile、或窗口早于第一次调用时就是这样。发一次消息再点刷新就有了。',
       usageSource: '数据来源',
+      dockNews: '新模型 {n}',
+      dockNewsHint: '点击暂时不再提示；上架 / 拉取在「设置 → OpenCode 套件」里做',
+      dockUsage: '今日 {tokens} tok',
+      dockUsageHint: '本机按天统计的 token 用量（{calls} 次调用）',
+      dockSourceLive: '实时',
+      dockSourceLog: '会话日志',
+      dockFailed: '统计读取失败',
       newsTitle: '模型上新提醒',
       newsHint: '后台每 {minutes} 分钟核对一次两档线上列表。下面是还没处理的变动。',
       newsNew: '新上线',
@@ -459,6 +466,13 @@ window.__ModuleLoader__.load({
       usageEmpty: 'No model calls in this window.',
       usageEmptyHint: 'That is what a fresh profile, or a window that predates the first call, looks like. Send a message and refresh.',
       usageSource: 'Source',
+      dockNews: '{n} new',
+      dockNewsHint: 'Click to stop the nudge here; adopting them lives in Settings → OpenCode Suite',
+      dockUsage: '{tokens} tok today',
+      dockUsageHint: 'Tokens this host spent today ({calls} calls)',
+      dockSourceLive: 'live',
+      dockSourceLog: 'session log',
+      dockFailed: 'usage unavailable',
       newsTitle: 'New models',
       newsHint: 'Both tiers\' online listings are checked every {minutes} minutes in the background. Here is what is still unhandled.',
       newsNew: 'new online',
@@ -595,6 +609,13 @@ window.__ModuleLoader__.load({
       shareTrack: { width: 72, height: 6, borderRadius: 3, background: 'var(--dsw-alias-bg-layer-1)', overflow: 'hidden', flex: 'none' },
       shareFill: { height: '100%', borderRadius: 3, background: 'var(--dsw-alias-state-business-primary)' },
       divider: { height: 1, background: 'var(--dsw-alias-border-l2)', margin: '2px 0' },
+      // The composer dock's own pill language, mirrored from the stats pills:
+      // transparent at rest, hover surface on the button form, tertiary text.
+      dockRoot: { display: 'inline-flex', gap: 12, minWidth: 0, maxWidth: '100%', boxSizing: 'border-box', fontSize: 'calc(var(--dsh-content-font-size-secondary, 13px) - 1px)', lineHeight: 'calc(20px + var(--dsh-content-font-delta-secondary, 0px))' },
+      dockPill: { display: 'inline-flex', alignItems: 'center', gap: 6, boxSizing: 'border-box', maxWidth: '100%', padding: '1px 8px', border: 'none', borderRadius: 999, cornerShape: 'round', background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', font: 'inherit', fontVariantNumeric: 'tabular-nums', lineHeight: 'inherit', whiteSpace: 'nowrap' },
+      dockButton: { cursor: 'pointer' },
+      dockButtonHover: { background: 'var(--dsw-alias-interactive-bg-hover)', color: 'var(--dsw-alias-label-secondary)' },
+      dockDot: { width: 6, height: 6, borderRadius: 999, flex: 'none', background: 'var(--dsw-alias-state-business-primary)' },
     }
 
     const BADGE_TONE = {
@@ -1763,6 +1784,65 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /* ------------------------------------------------------------------ *
+     * Composer dock
+     * ------------------------------------------------------------------ */
+
+    /**
+     * One bare observable for the dock's facts, owned by the apply closure and
+     * shared by every render occurrence: the same snapshot reference until a
+     * fact moves, and one poller no matter how many conversations are open.
+     * @returns the observable the renderer binds as `useDockState`.
+     */
+    function createDockState() {
+      let value = { news: null, usage: null, error: null, suppressed: 0 }
+      const listeners = new Set()
+      return {
+        getSnapshot: () => value,
+        subscribe(listener) {
+          listeners.add(listener)
+          return () => { listeners.delete(listener) }
+        },
+        patch(next) {
+          value = { ...value, ...next }
+          for (const listener of [...listeners]) listener()
+        },
+      }
+    }
+
+    function DockPills(props) {
+      const { t, useDockState, dismissNews } = props
+      const state = useDockState(value => value)
+      const news = state.news
+      const usage = state.usage
+      // The nudge is local: dismissing it here must not clear the host's
+      // pending list, which is the work list the settings card acts on.
+      const unseen = news !== null && news.pendingTotal > state.suppressed
+      return React.createElement('div', { style: styles.dockRoot },
+        unseen
+          ? React.createElement('button', {
+              type: 'button',
+              style: { ...styles.dockPill, ...styles.dockButton },
+              title: t('dockNewsHint'),
+              onClick: dismissNews,
+            },
+              React.createElement('span', { style: styles.dockDot, 'aria-hidden': 'true' }),
+              t('dockNews').replace('{n}', String(news.pendingTotal - state.suppressed)),
+            )
+          : null,
+        usage !== null && usage.tokens > 0
+          ? React.createElement('span', {
+              style: styles.dockPill,
+              title: t('dockUsageHint').replace('{calls}', String(usage.calls)),
+            },
+              `${t('dockUsage').replace('{tokens}', fmtNumber(usage.tokens))} · ${usage.source === 'log' ? t('dockSourceLog') : t('dockSourceLive')}`,
+            )
+          : state.error
+            ? React.createElement('span', { style: styles.dockPill, title: state.error }, t('dockFailed'))
+            : null,
+      )
+    }
+
     function UsageBreakdownCard(props) {
       const { t, data, error, loading, windowDays, setWindowDays, onRefresh, onToggle, onSource, busy } = props
       const enabled = data ? data.enabled !== false : true
@@ -2363,6 +2443,56 @@ window.__ModuleLoader__.load({
       }
       const injected = () => ({ t, api })
 
+      // ---- composer dock -------------------------------------------------
+      // One source, one poller, however many conversations are open. The dock
+      // asks for two facts the page already has: how many model ids are still
+      // unhandled, and what today cost. Nothing here re-reads storage.
+      const dockState = createDockState()
+      const refreshDock = async () => {
+        try {
+          const remote = await api()
+          if (!remote) return
+          const status = unwrapRemote(await remote.status())
+          const usage = unwrapRemote(await remote.usageBreakdown(1))
+          const today = usage && usage.days && usage.days.length > 0 ? usage.days[usage.days.length - 1] : null
+          dockState.patch({
+            news: status && status.modelWatch
+              ? { pendingTotal: status.modelWatch.pendingTotal, tiers: status.modelWatch.tiers }
+              : null,
+            usage: usage && usage.enabled
+              ? { tokens: today === null ? 0 : today.total, calls: today === null ? 0 : today.calls, source: usage.source }
+              : null,
+            error: null,
+          })
+        } catch (err) {
+          dockState.patch({ error: String((err && err.message) || err) })
+        }
+      }
+      // A local suppression, deliberately not the host's dismiss: that one
+      // clears the work list the settings card acts on.
+      const dismissDockNews = () => {
+        const current = dockState.getSnapshot()
+        if (current.news === null) return
+        dockState.patch({ suppressed: current.news.pendingTotal })
+      }
+      ctx.effect(() => {
+        void refreshDock()
+        const timer = setInterval(() => { void refreshDock() }, 60000)
+        // A browser timer has no unref; a Node one must not hold a test process
+        // open, and nothing here is worth keeping the loop alive for.
+        timer.unref?.()
+        return () => clearInterval(timer)
+      }, 'opencode-suite: composer dock state')
+      ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
+        name: 'conversation.composer.dock',
+        id: 'model-news',
+        // After the stats pills (order 0) so the reading order stays
+        // performance → news.
+        order: 10,
+        locale: NS,
+        inject: () => ({ hooks: { dockState }, dismissNews: dismissDockNews }),
+      }, DockPills))
+
       // Error boundary: any render crash inside the page becomes a VISIBLE
       // diagnostic instead of a blank content column, so problems self-report.
       class SuitePageBoundary extends React.Component {
@@ -2443,6 +2573,8 @@ window.__ModuleLoader__.load({
       FreeTierCard,
       SessionCard,
       ModelNewsCard,
+      DockPills,
+      createDockState,
       UsageBreakdownCard,
       PoolPage,
       TYPERT_REMOTE,

@@ -864,3 +864,130 @@ test('switch reasons and formatting stay localized', async (t) => {
   assert.equal(usageErrorText('http-429', tr), 'httpError')
   assert.equal(usageErrorText('mystery', tr), 'unknown')
 })
+
+/* ------------------------------------------------------------------ *
+ * Composer dock
+ * ------------------------------------------------------------------ */
+
+const DOCK_STATE = (over) => ({ news: null, usage: null, error: null, suppressed: 0, ...over })
+
+function dockPills(react, loaded, state, extra = {}) {
+  const { React, renderToString } = react
+  const { DockPills: Component } = loaded.module.__test
+  return renderToString(React.createElement(Component, {
+    t: key => key,
+    useDockState: selector => (selector ? selector(state) : state),
+    dismissNews: () => {},
+    ...extra,
+  }))
+}
+
+test('the dock shows a new-model nudge only while something is unseen', async (t) => {
+  const react = await loadReact(t)
+  const loaded = await loadModule(t)
+  if (!loaded || react === null) return
+
+  const fresh = dockPills(react, loaded, DOCK_STATE({ news: { pendingTotal: 3, tiers: {} } }))
+  assert.ok(fresh.includes('dockNews'), 'an unseen notice renders the pill')
+  assert.ok(fresh.includes('>3<') || fresh.includes('3'), 'the pill carries the count')
+
+  const seen = dockPills(react, loaded, DOCK_STATE({ news: { pendingTotal: 3, tiers: {} }, suppressed: 3 }))
+  assert.ok(!seen.includes('dockNews'), 'a dismissed nudge stays hidden')
+
+  const none = dockPills(react, loaded, DOCK_STATE({ news: { pendingTotal: 3, tiers: {} }, suppressed: 1 }))
+  assert.ok(none.includes('dockNews'), 'one dismissed id still leaves two unseen')
+  assert.ok(!none.includes('>3<'), 'and it counts only what is left')
+})
+
+test('the dock shows today\'s tokens with its source, and nothing before the first call', async (t) => {
+  const react = await loadReact(t)
+  const loaded = await loadModule(t)
+  if (!loaded || react === null) return
+
+  const used = dockPills(react, loaded, DOCK_STATE({ usage: { tokens: 53250, calls: 120, source: 'live' } }))
+  assert.ok(used.includes('dockUsage'), 'the usage pill renders')
+  assert.ok(used.includes('dockSourceLive'), 'and names where the numbers come from')
+  assert.ok(!used.includes('dockSourceLog'), 'the live source is not labelled as the log')
+
+  const fromLog = dockPills(react, loaded, DOCK_STATE({ usage: { tokens: 900, calls: 4, source: 'log' } }))
+  assert.ok(fromLog.includes('dockSourceLog'), 'the log source is labelled as such')
+
+  const empty = dockPills(react, loaded, DOCK_STATE({ usage: { tokens: 0, calls: 0, source: 'live' } }))
+  assert.ok(!empty.includes('dockUsage'), 'a day with no calls shows no number')
+
+  const unknown = dockPills(react, loaded, DOCK_STATE({ error: 'boom' }))
+  assert.ok(unknown.includes('dockFailed'), 'a failed read says so instead of going blank')
+})
+
+test('the dock source keeps one snapshot reference until a fact moves', async (t) => {
+  const loaded = await loadModule(t)
+  if (!loaded) return
+  const source = loaded.module.__test.createDockState()
+  const before = source.getSnapshot()
+  assert.equal(source.getSnapshot(), before, 'a fresh source answers the same object')
+
+  const seen = []
+  const off = source.subscribe(() => seen.push(source.getSnapshot()))
+  source.patch({ news: { pendingTotal: 1, tiers: {} } })
+  assert.equal(seen.length, 1, 'a patch notifies once')
+  assert.notEqual(source.getSnapshot(), before, 'and publishes a new snapshot')
+  assert.equal(seen[0].news.pendingTotal, 1)
+
+  source.patch({ usage: { tokens: 5, calls: 1, source: 'live' } })
+  assert.equal(seen.length, 2)
+  assert.equal(seen[1].news.pendingTotal, 1, 'the other fact survives the next patch')
+
+  off()
+  source.patch({ error: 'x' })
+  assert.equal(seen.length, 2, 'unsubscribing stops the notifications')
+})
+
+test('the dock registers into the composer slot behind the stats pills', async (t) => {
+  const loaded = await loadModule(t)
+  if (!loaded) return
+  const registered = []
+  const remote = {
+    calls: [],
+    status: async () => ({ modelWatch: { pendingTotal: 2, tiers: {} } }),
+    usageBreakdown: async days => {
+      remote.calls.push(['usageBreakdown', days])
+      return { enabled: true, source: 'live', days: [{ date: '2026-09-26', total: 4000, calls: 3 }] }
+    },
+    dismissModelNews: async tier => { remote.calls.push(['dismissModelNews', tier]); return 0 },
+  }
+  loaded.module.apply({
+    remote: { $mount: async () => {} },
+    effect: fn => { fn(); return () => {} },
+    locale: { register: () => () => {}, bind: () => key => key },
+    slots: {
+      register: (opts) => { registered.push(opts); return () => {} },
+      inject: (_name, factory) => { factory() },
+    },
+    get: key => (key === 'remote.opencodeSuite' ? remote : null),
+  })
+  const dock = registered.find(entry => entry.name === 'conversation.composer.dock')
+  assert.ok(dock, 'the composer dock is a registered extension position')
+  assert.equal(dock.id, 'model-news')
+  assert.ok(dock.order > 0, 'it renders after the stats pills, not before them')
+  assert.equal(dock.locale, 'settings.opencodeSuite', 'its copy comes from this plugin\'s dictionary')
+
+  const injected = dock.inject()
+  assert.equal(typeof injected.hooks.dockState.getSnapshot, 'function', 'the live facts arrive as a bare observable')
+  assert.equal(typeof injected.hooks.dockState.subscribe, 'function')
+  assert.equal(typeof injected.dismissNews, 'function', 'the nudge is dismissed by callback, not by the component fetching')
+
+  // The one behaviour the dock owns: dismissing hides the nudge HERE and must
+  // leave the host's pending list alone, because that list is the work list the
+  // settings card acts on.
+  await new Promise(resolve => setImmediate(resolve))
+  const source = injected.hooks.dockState
+  assert.equal(source.getSnapshot().news.pendingTotal, 2, 'the poller filled the news fact')
+  assert.equal(source.getSnapshot().usage.tokens, 4000, 'and the today total')
+  injected.dismissNews()
+  assert.equal(source.getSnapshot().suppressed, 2, 'the nudge is now seen')
+  // Let any async work the callback started land before reading the call log:
+  // a dismiss that quietly called the host would do it after this tick.
+  await new Promise(resolve => setTimeout(resolve, 10))
+  assert.deepEqual(remote.calls.filter(call => call[0] === 'dismissModelNews'), [],
+    'and the host was never told to clear its work list')
+})
