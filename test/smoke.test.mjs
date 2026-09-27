@@ -1247,3 +1247,45 @@ test('a refused push leaves the work list intact for the card', async (t) => {
   assert.equal(report.error, null, 'and the listing check itself is unaffected')
   await root.fiber.dispose()
 })
+
+test('a refused delivery reports the channel stage behind dsh-im\'s narrowed code', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  // dsh-im narrows an unrecognised error to `delivery-failed` and keeps the real
+  // stage on `cause`; that chain is only visible in-process, so the card is the
+  // place it has to be rendered.
+  const deep = new Error('WEIXIN_SEND_FAILED')
+  deep.code = 'weixin/send-failed'
+  const middle = new Error('delivery-failed')
+  middle.code = 'delivery-failed'
+  middle.cause = deep
+  const im = imDouble({ fail: null })
+  im.send = async () => { throw middle }
+
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { notifyImEnabled: true, notifyImBotId: 'wx_1', notifyImTargetId: 'tgt_1' },
+  })
+  root.provide('dshIm', im)
+  const result = await plugin.testImNotify()
+  assert.equal(result.sent, false)
+  assert.ok(result.error.includes('delivery-failed'), 'the public code is still there')
+  assert.ok(result.error.includes('weixin/send-failed'), 'and the stage behind it is named')
+  assert.ok(result.error.includes('WEIXIN_SEND_FAILED'), 'down to the channel message')
+  await root.fiber.dispose()
+})
+
+test('a delivery failure with no cause at all still reads as a sentence', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const im = imDouble({ fail: null })
+  im.send = async () => { throw new Error('') }
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    config: { notifyImEnabled: true, notifyImBotId: 'wx_1', notifyImTargetId: 'tgt_1' },
+  })
+  root.provide('dshIm', im)
+  const result = await plugin.testImNotify()
+  assert.equal(result.sent, false)
+  assert.equal(typeof result.error, 'string')
+  assert.ok(result.error.length > 0)
+  await root.fiber.dispose()
+})

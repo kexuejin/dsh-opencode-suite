@@ -513,6 +513,37 @@ class OpenCodeSuiteAdapter extends LlmAdapter {
  * The plugin service. Extends TypertRemoteService so the Gateway can claim and
  * dispatch the `opencodeSuite` invocations declared in typert.host.js.
  */
+/**
+ * Describe a refused delivery with the cause chain dsh-im keeps in-process.
+ *
+ * dsh-im narrows anything it does not recognise to a single public
+ * `delivery-failed`, and its own HTTP endpoint returns the same empty code — so
+ * the channel's actual stage (a missing token, an offline bridge, a rejected
+ * send) only exists on the thrown error's `cause` chain, which is available
+ * here and nowhere else. Rendering it turns "delivery-failed: delivery-failed"
+ * into the sentence that tells a person what to go fix.
+ * @param {unknown} error - the thrown value.
+ * @returns {string} the chain, outermost first, repeats dropped.
+ */
+function describeDeliveryFailure(error) {
+  const parts = []
+  const seen = new Set()
+  let current = error
+  for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth += 1) {
+    const code = typeof current.code === 'string' && current.code.length > 0 ? current.code : null
+    const message = typeof current.message === 'string' && current.message.length > 0
+      ? current.message
+      : (typeof current === 'string' ? current : null)
+    const label = code !== null && message !== null && code !== message ? `${code}: ${message}` : (code ?? message)
+    if (label !== null && !seen.has(label)) {
+      seen.add(label)
+      parts.push(label)
+    }
+    current = current instanceof Error ? current.cause : undefined
+  }
+  return parts.length > 0 ? parts.join(' ← ') : 'delivery failed without a reason'
+}
+
 export class OpenCodeSuite extends TypertRemoteService {
   static inject = ['llm', 'credentials', 'tools']
   static Config = Config
@@ -803,8 +834,7 @@ export class OpenCodeSuite extends TypertRemoteService {
       if (result?.sent === true) return { sent: true, error: null }
       return fail(`the IM plugin did not confirm the send: ${JSON.stringify(result ?? null)}`)
     } catch (error) {
-      const code = error && error.code ? String(error.code) : null
-      return { sent: false, error: code === null ? messageOf(error) : `${code}: ${messageOf(error)}` }
+      return { sent: false, error: describeDeliveryFailure(error) }
     }
   }
 
