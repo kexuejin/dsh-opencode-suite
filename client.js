@@ -251,7 +251,7 @@ window.__ModuleLoader__.load({
       imTest: '发条测试',
       imTesting: '发送中…',
       imSent: '已发出',
-      imFailed: '发送失败：{error}',
+      imFailed: '发送失败：',
       imLastResult: '上次结果：{result}',
       newsTitle: '模型上新提醒',
       newsHint: '后台每 {minutes} 分钟核对一次两档线上列表。下面是还没处理的变动。',
@@ -497,7 +497,7 @@ window.__ModuleLoader__.load({
       imTest: 'Send a test',
       imTesting: 'Sending…',
       imSent: 'Sent',
-      imFailed: 'Send failed: {error}',
+      imFailed: 'Send failed: ',
       imLastResult: 'Last result: {result}',
       newsTitle: 'New models',
       newsHint: 'Both tiers\' online listings are checked every {minutes} minutes in the background. Here is what is still unhandled.',
@@ -1747,6 +1747,22 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * Split a delivery failure into the sentence a person acts on and the
+     * technical chain that produced it. The chain reads outermost-first, so the
+     * channel's own wording is LAST — that is the headline, and the codes above
+     * it are the detail.
+     */
+    function deliveryHeadline(error) {
+      const parts = typeof error === 'string' && error.length > 0 ? error.split(' \u2190 ') : []
+      if (parts.length === 0) return { headline: 'unknown', detail: '' }
+      const deepest = parts[parts.length - 1]
+      const detail = parts.slice(0, -1).join(' \u2190 ')
+      // A segment like "code: message" reads better as its message alone.
+      const headline = deepest.includes(': ') ? deepest.slice(deepest.indexOf(': ') + 2) : deepest
+      return { headline, detail }
+    }
+
     function ImNotifyRow(props) {
       const { t, report, config, busy, onPick, onTest, testing } = props
       const bots = report && Array.isArray(report.bots) ? report.bots : []
@@ -1821,11 +1837,16 @@ window.__ModuleLoader__.load({
             )
           : null,
         props.lastResult
-          ? React.createElement('p', {
-              style: { ...styles.hint, ...(props.lastResult.sent ? styles.noticeOk : styles.noticeErr) },
-            }, props.lastResult.sent
-              ? t('imSent')
-              : t('imFailed').replace('{error}', props.lastResult.error ?? 'unknown'))
+          ? (props.lastResult.sent
+              ? React.createElement('p', { style: { ...styles.hint, ...styles.noticeOk } }, t('imSent'))
+              : React.createElement(React.Fragment, null,
+                  React.createElement('p', { style: { ...styles.hint, ...styles.noticeErr, fontWeight: 500 } },
+                    `${t('imFailed')}${deliveryHeadline(props.lastResult.error).headline}`),
+                  deliveryHeadline(props.lastResult.error).detail.length > 0
+                    ? React.createElement('p', { style: styles.dayLabel, wordBreak: 'break-all' },
+                      deliveryHeadline(props.lastResult.error).detail)
+                    : null,
+                ))
           : null,
       )
     }

@@ -1084,13 +1084,18 @@ test('the IM row offers the discovered targets and explains an empty one', async
   const absent = render({ config, report: { available: false, reason: 'dsh-im is not enabled', bots: [] } })
   assert.ok(absent.includes('dsh-im is not enabled'), 'a missing plugin reads as missing, not as empty')
 
+  const chain = 'delivery-failed \u2190 send-rejected: Weixin text delivery failed (http=2xx) \u2190 send-rejected: \u5fae\u4fe1\u670d\u52a1\u62d2\u7edd\u4e86\u56de\u590d\u6d88\u606f\u3002'
   const failed = render({
     config,
     report: { available: true, reason: null, bots: [{ botId: 'bot_1', channel: 'telegram', targets: [{ targetId: 't', name: 'T', kind: 'chat' }] }] },
-    lastResult: { sent: false, error: 'unauthorized' },
+    lastResult: { sent: false, error: chain },
   })
-  // The identity `t` returns the key, so this asserts the failure row exists
-  // rather than the interpolated copy; the real dictionary carries {error}.
+  // The identity `t` returns the key, so the failure row is asserted by its key
+  // and the split by the channel's own sentence appearing without the codes.
   assert.ok(failed.includes('imFailed'), 'a refused send renders its failure row on the card')
   assert.ok(!failed.includes('imSent'), 'and is never dressed up as sent')
+  assert.ok(failed.includes('\u5fae\u4fe1\u670d\u52a1\u62d2\u7edd\u4e86\u56de\u590d\u6d88\u606f'), 'the channel sentence is the headline')
+  assert.ok(failed.includes('send-rejected: Weixin text delivery failed'), 'the codes stay as detail')
+  assert.ok(!/imFailed[^<]*<\/p><\/div><div[^>]*>.{0,40}delivery-failed/.test(failed),
+    'the public code is not the sentence the person reads first')
 })
