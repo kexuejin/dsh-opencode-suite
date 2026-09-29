@@ -174,6 +174,21 @@ Every key is optional; the defaults are what the bundle patch inserts.
 counts non-quota failures (rate limit / server / timeout). Quota exhaustion and
 invalid credentials always switch immediately, whatever these are set to.
 
+### The free tier needs its route first
+
+`llm-pi-ai.providers.opencode` does not exist in a fresh profile, and until it
+does the free tier's card can only report what is online — it cannot adopt
+anything. Declaring a provider row is the harness's job, not this plugin's (it
+also needs a host restart), so the card states the four values instead of sending
+you to find them:
+
+| Field | Value |
+| --- | --- |
+| route | `opencode` |
+| Base URL | `https://opencode.ai/zen/v1` |
+| API | `openai-completions` |
+| API key env | optional — this endpoint is public |
+
 ### Image input declarations
 
 The upstream `models` endpoint publishes ids only and **declares no model as

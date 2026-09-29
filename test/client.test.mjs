@@ -1006,6 +1006,23 @@ test('the dock registers into the composer slot behind the stats pills', async (
     'and the host was never told to clear its work list')
 })
 
+test('the free-tier card states exactly which route fields are missing', async (t) => {
+  const react = await loadReact(t)
+  const loaded = await loadModule(t)
+  if (!loaded || react === null) return
+  const { React, renderToString } = react
+  const { FreeTierCard } = loaded.module.__test
+  const html = renderToString(React.createElement(FreeTierCard, {
+    t: key => key, sel: null, setSel: () => {}, busy: null, onApply: () => {}, onFetch: () => {}, fetching: false,
+    data: { tier: 'free', route: 'opencode', baseURL: 'https://opencode.ai/zen/v1', exists: false, apiKeyEnv: null, configured: [], live: [], added: [], stale: [], revision: null, error: null },
+  }))
+  // "Go to the Models page" without the fields made the reader go work out what
+  // a route declaration needs; every field it asks for is named here.
+  for (const key of ['freeMissingRoute', 'freeMissingBase', 'freeMissingApi', 'freeMissingKey', 'freeMissingAfter']) {
+    assert.ok(html.includes(key), `the missing-route state names ${key}`)
+  }
+})
+
 test('the IM row offers the discovered targets and explains an empty one', async (t) => {
   const react = await loadReact(t)
   const loaded = await loadModule(t)

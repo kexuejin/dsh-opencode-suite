@@ -153,7 +153,12 @@ window.__ModuleLoader__.load({
       freeTitle: '免费档模型',
       freeHint: '免费档路由 opencode 由 llm-pi-ai 持有，本插件只通过 settings 缝隙读写它的模型列表：勾选线上有、配置里没有的模型即可加入；取消勾选即从配置里移除。',
       freeRoute: '路由',
-      freeMissing: '免费档路由尚未配置（settings 的 llm-pi-ai.providers.opencode 不存在）',
+      freeMissing: '免费档路由尚未配置。在「设置 → 模型」加一行 Provider：',
+      freeMissingRoute: '路由 route：opencode',
+      freeMissingBase: 'Base URL：https://opencode.ai/zen/v1',
+      freeMissingApi: 'API 类型：openai-completions',
+      freeMissingKey: 'API Key 变量名：可留空（这个端点公开）',
+      freeMissingAfter: '加完要重启宿主，之后本页就能上架免费档模型。',
       freeConfigured: '已配置 {n} 个',
       freeLive: '线上 {n} 个',
       freeAdded: '可上架 {n}',
@@ -405,7 +410,12 @@ window.__ModuleLoader__.load({
       freeTitle: 'Free tier models',
       freeHint: 'The free route opencode belongs to llm-pi-ai; this plugin only reads and writes its model list through the settings seam. Check an online model that is not configured to add it; uncheck a configured one to drop it.',
       freeRoute: 'route',
-      freeMissing: 'The free route is not configured yet (llm-pi-ai.providers.opencode is absent)',
+      freeMissing: 'The free route is not configured. Add one Provider row on Settings → Models:',
+      freeMissingRoute: 'route: opencode',
+      freeMissingBase: 'Base URL: https://opencode.ai/zen/v1',
+      freeMissingApi: 'API: openai-completions',
+      freeMissingKey: 'API key env: optional (this endpoint is public)',
+      freeMissingAfter: 'Adding a route needs a host restart; after that this page can adopt the free models.',
       freeConfigured: '{n} configured',
       freeLive: '{n} online',
       freeAdded: '{n} adoptable',
@@ -1446,7 +1456,15 @@ window.__ModuleLoader__.load({
           ? React.createElement('p', { style: styles.error }, `${t('loadFailed')}: ${free.error}`)
           : null,
         free.exists === false
-          ? React.createElement('p', { style: styles.hint }, t('freeMissing'))
+          ? React.createElement('div', { style: styles.barRow },
+              React.createElement('p', { style: { ...styles.hint, fontWeight: 500 } }, t('freeMissing')),
+              // The exact fields, so nobody has to go and work out what a route
+              // declaration needs. This plugin cannot write one: adding a
+              // provider row is the harness's, and it needs a restart.
+              ['freeMissingRoute', 'freeMissingBase', 'freeMissingApi', 'freeMissingKey']
+                .map(key => React.createElement('code', { key, style: styles.dayLabel }, t(key))),
+              React.createElement('p', { style: styles.hint }, t('freeMissingAfter')),
+            )
           : null,
         free.revision !== null && free.revision !== undefined
           ? React.createElement('p', { style: styles.hint }, `${t('freeRevision')}: ${free.revision}`)

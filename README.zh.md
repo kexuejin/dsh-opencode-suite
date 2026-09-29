@@ -154,6 +154,19 @@ Key 可以在设置页的「Key 管理」里加，也可以用 `oc_suite_pool` �
 `switchAfterConsecutiveFailures` 统计非额度类失败（限流 / 服务端 / 超时）。额度耗尽和
 凭据失效始终立即切换，不受这两项影响。
 
+### 免费档要先有路由
+
+新 profile 里 `llm-pi-ai.providers.opencode` 并不存在，在它存在之前免费档那张卡只能告诉你
+线上有什么、没法上架。声明 provider 行是 harness 的事（而且要重启宿主），所以卡片直接把
+四个值写出来，而不是让你自己去找：
+
+| 字段 | 值 |
+| --- | --- |
+| route | `opencode` |
+| Base URL | `https://opencode.ai/zen/v1` |
+| API | `openai-completions` |
+| API Key 变量名 | 可留空（这个端点公开） |
+
 ### 图片输入声明
 
 上游 `models` 接口只公布 id，**不声明任何模型的图片能力**，所以 Go 档接入的模型默认全部
