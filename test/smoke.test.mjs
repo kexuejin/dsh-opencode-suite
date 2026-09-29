@@ -1399,3 +1399,27 @@ test('the free-tier backlog excludes what the profile has adopted', async (t) =>
   assert.equal(report.unconfiguredTotal, 2)
   await root.fiber.dispose()
 })
+
+test('the card can re-baseline a tier, clearing notices a wrong baseline produced', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context)
+  const listings = { go: ['a'], free: [] }
+  plugin.tierListing = async tierId => (listings[tierId] ?? []).map(id => ({ id, name: id }))
+  await plugin.checkModels({ fresh: true })
+  listings.go.push('never-really-new', 'longcat-2.5-preview-free')
+  await plugin.checkModels({ fresh: true })
+  assert.equal((await plugin.modelWatchReport()).tiers.go.pending.length, 2)
+
+  const result = await plugin.reseedModelNews('go')
+  assert.equal(result.cleared, 2)
+  assert.equal(result.online, 3, 'the reseed reports the listing it adopted')
+  assert.equal((await plugin.modelWatchReport()).tiers.go.pending.length, 0)
+
+  listings.go.push('genuinely-new')
+  await plugin.checkModels({ fresh: true })
+  assert.deepEqual((await plugin.modelWatchReport()).tiers.go.pending.map(row => row.id), ['genuinely-new'],
+    'only what arrives after the re-baseline is news')
+  await assert.rejects(() => plugin.reseedModelNews('nope'), /unknown watched tier/)
+  await root.fiber.dispose()
+})

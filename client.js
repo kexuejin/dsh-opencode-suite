@@ -265,6 +265,8 @@ window.__ModuleLoader__.load({
       newsFetchGo: '拉取到 Go 档',
       newsAdoptFree: '上架到免费档',
       newsDismiss: '知道了',
+      newsReseed: '以当前列表为基线',
+      newsReseedHint: '把现在线上的清单当作起点，之前通报的清空 —— 用于基线取错来源时重来。',
       newsCheck: '立即核对',
       newsChecked: '核对于 {when}',
       newsOff: '已关闭：不后台核对，列表变化只在你打开本页时显示。',
@@ -514,6 +516,8 @@ window.__ModuleLoader__.load({
       newsFetchGo: 'Fetch into the Go tier',
       newsAdoptFree: 'Adopt into the free tier',
       newsDismiss: 'Dismiss',
+      newsReseed: 'Use this as the baseline',
+      newsReseedHint: 'Start counting from what is online now and drop what was announced — the escape hatch for a baseline taken from the wrong source.',
       newsCheck: 'Check now',
       newsChecked: 'checked {when}',
       newsOff: 'Off: no background check, so listing changes only show while this page is open.',
@@ -571,6 +575,7 @@ window.__ModuleLoader__.load({
         DESCRIPTOR('imTargets', []),
         DESCRIPTOR('testImNotify', ['text']),
         DESCRIPTOR('checkModels', []),
+        DESCRIPTOR('reseedModelNews', ['tier']),
         DESCRIPTOR('dismissModelNews', ['tier']),
         DESCRIPTOR('takeOverState', []),
         DESCRIPTOR('setActive', ['id']),
@@ -1860,7 +1865,7 @@ window.__ModuleLoader__.load({
     function ModelNewsCard(props) {
       const {
         t, watch, busy, onCheck, onAdopt, onDismiss, checking,
-        im, imConfig, imResult, onImPick, onImTest, imTesting,
+        im, imConfig, imResult, onImPick, onImTest, imTesting, onReseed,
       } = props
       const enabled = watch ? watch.enabled !== false : true
       const tiers = watch && watch.tiers ? watch.tiers : { go: { pending: [], gone: [] }, free: { pending: [], gone: [] } }
@@ -1925,6 +1930,12 @@ window.__ModuleLoader__.load({
                   disabled: busy !== null && busy !== undefined,
                   onClick: () => onDismiss(row.tierId),
                 }, t('newsDismiss')),
+                React.createElement('button', {
+                  style: styles.button,
+                  title: t('newsReseedHint'),
+                  disabled: busy !== null && busy !== undefined,
+                  onClick: () => onReseed(row.tierId),
+                }, t('newsReseed')),
               ),
             )),
       )
@@ -2447,6 +2458,10 @@ window.__ModuleLoader__.load({
         runAction(() => remoteDismissNews(tierId), null).then(load)
       }
 
+      const onReseedNews = (tierId) => {
+        runAction(async remote => remote.reseedModelNews(tierId), null).then(load)
+      }
+
       const onUsageSource = (source) => {
         runAction(async remote => remote.putConfig({ usageLogSource: source }), null).then(loadUsage)
       }
@@ -2605,7 +2620,7 @@ window.__ModuleLoader__.load({
               t, watch: data.modelWatch, busy, checking: checkingModels,
               onCheck: onCheckModels, onAdopt: onAdoptNews, onDismiss: onDismissNews,
               im, imConfig: data.imNotify ?? { enabled: false, botId: '', targetId: '' },
-              imResult, onImPick, onImTest, imTesting,
+              imResult, onImPick, onImTest, imTesting, onReseed: onReseedNews,
             }),
 
             React.createElement('div', { style: styles.divider }),

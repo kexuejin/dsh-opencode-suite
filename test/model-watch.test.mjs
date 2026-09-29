@@ -140,3 +140,21 @@ test('an idle pass rewrites the file, so the last check time is never stale', as
   assert.equal(watcher.pendingCount(), 0)
   assert.ok(readFileSync(statePath, 'utf8').includes('"seen"'), 'the state still names what it saw')
 })
+
+test('reseeding drops what a wrong baseline announced and starts from what is online', async () => {
+  const statePath = join(mkdtempSync(join(tmpdir(), 'dsh-watch-')), 'watched.json')
+  const watcher = new ModelWatcher({ statePath, now: () => at(26) })
+  await watcher.check(listings({ go: ['a'], free: [] }))
+  await watcher.check(listings({ go: ['a', 'b', 'c'], free: [] }))
+  assert.equal(watcher.pendingCount(), 2, 'two ids announced')
+
+  const dropped = watcher.reseed('go', ['a', 'b', 'c', 'd'])
+  assert.equal(dropped, 2, 'the notices go')
+  assert.equal(watcher.pendingCount(), 0)
+  assert.deepEqual(watcher.state.go.seen, ['a', 'b', 'c', 'd'], 'the baseline is what is online now')
+
+  // Only a genuinely new id is news after the reseed.
+  await watcher.check(listings({ go: ['a', 'b', 'c', 'd', 'e'], free: [] }))
+  assert.deepEqual(watcher.pending('go').map(row => row.id), ['e'])
+  assert.ok(readFileSync(statePath, 'utf8').includes('"seeded"'))
+})

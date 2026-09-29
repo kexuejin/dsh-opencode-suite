@@ -244,6 +244,10 @@ seen in `$DSH_HOME/opencode-suite.watched.json`.
   it without a page.
 - Dismissing clears the notice, not the seen set: a dismissed id is not
   re-announced until it leaves and comes back.
+- **Use this as the baseline** adopts what is online right now and drops what
+  was announced. It is the escape hatch for a baseline that was taken from the
+  wrong source: those notices name ids that were online all along, and only a
+  person can say where to start counting again.
 - A tier that fails to answer is recorded as an error and never blocks the other
   one.
 

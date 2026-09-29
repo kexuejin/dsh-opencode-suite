@@ -366,6 +366,17 @@ export const TYPERT = {
         acceptsUndefined: true,
       },
     ], strict('dsh-opencode-suite#DeliveryResult', deliveryResultSchema)),
+    invocation('reseedModelNews', [
+      {
+        name: 'tier',
+        wire: 'tier',
+        typeSymbol: 'dsh-opencode-suite#WatchedTier',
+        schema: z.union([z.literal('go'), z.literal('free')]),
+      },
+    ], strict('dsh-opencode-suite#ReseedResult', z.object({
+      cleared: z.number(),
+      online: z.number(),
+    }))),
     invocation('checkModels', [], strict('dsh-opencode-suite#ModelCheckResult', z.object({
       notices: z.array(z.string()),
       pendingTotal: z.number(),

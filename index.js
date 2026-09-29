@@ -893,6 +893,21 @@ export class OpenCodeSuite extends TypertRemoteService {
   }
 
   /**
+   * Adopt a tier's current listing as the baseline and drop what it announced.
+   *
+   * A baseline taken from the wrong source produces notices about ids that were
+   * online all along. Only a person can decide where to start counting again.
+   * @param tierId - `go` or `free`.
+   * @returns `{cleared, online}` for the card.
+   */
+  async reseedModelNews(tierId) {
+    if (!WATCHED_TIERS.includes(tierId)) throw new Error(`unknown watched tier: ${String(tierId)}`)
+    const listing = await this.tierListing(tierId, undefined, { fresh: true })
+    const ids = listing.map(entry => entry.id)
+    return { cleared: this.modelWatcher.reseed(tierId, ids), online: ids.length }
+  }
+
+  /**
    * Dismiss one tier's news. The seen set is kept, so the dismissed ids are
    * not announced again until they leave and come back.
    * @param tierId - `go` or `free`.

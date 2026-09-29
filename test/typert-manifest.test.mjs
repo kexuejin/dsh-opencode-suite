@@ -19,6 +19,7 @@ const EXPECTED_METHODS = [
   'checkModels',
   'dismissModelNews',
   'imTargets',
+  'reseedModelNews',
   'testImNotify',
   'takeOverState',
   'setActive',

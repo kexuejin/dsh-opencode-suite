@@ -150,6 +150,28 @@ export class ModelWatcher {
     return dropped
   }
 
+  /**
+   * Adopt a tier's current listing as the baseline and drop what it announced.
+   *
+   * The escape hatch for a baseline that was taken from the wrong source: the
+   * ids it produced are real but not new, and only a person can say "this is
+   * what is online now, start counting from here".
+   * @param {string} tierId - `go` or `free`.
+   * @param {string[]} liveIds - the listing to adopt.
+   * @returns {number} how many pending ids were dropped.
+   */
+  reseed(tierId, liveIds) {
+    const tier = this.state[tierId] ?? emptyTier()
+    const dropped = Object.keys(tier.pending).length + Object.keys(tier.gone).length
+    tier.seeded = true
+    tier.seen = [...new Set(liveIds)]
+    tier.pending = {}
+    tier.gone = {}
+    this.state[tierId] = tier
+    this.save()
+    return dropped
+  }
+
   /** The ids a tier is still announcing, oldest notice first. */
   pending(tierId) {
     const tier = this.state[tierId]
