@@ -760,7 +760,8 @@ export class OpenCodeSuite extends TypertRemoteService {
   async checkModels({ fresh = false } = {}) {
     const { notices } = await this.modelWatcher.check(async (tierId) => {
       const listing = await this.tierListing(tierId, undefined, { fresh })
-      return listing.map(entry => entry.id)
+      // Names travel with the ids so a RENAME is a notice, not a silent change.
+      return listing.map(entry => ({ id: entry.id, name: entry.name }))
     })
     if (notices.length > 0) {
       this.logger?.info?.(`opencode-suite: new online models: ${notices.join(', ')}`)

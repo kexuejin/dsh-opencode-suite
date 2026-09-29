@@ -185,7 +185,8 @@ function appendModelNews(lines, watch) {
   if (unadopted.length > 0) {
     lines.push(`Online but NOT adopted (${unadopted.length}) — not new, so never announced: ${unadopted.join(', ')}`)
   }
-  if (go.pending.length === 0 && go.gone.length === 0 && free.pending.length === 0 && free.gone.length === 0) {
+  if (go.pending.length === 0 && go.gone.length === 0 && free.pending.length === 0 && free.gone.length === 0
+      && (go.renamed ?? []).length === 0 && (free.renamed ?? []).length === 0) {
     lines.push(`Model watch: nothing new · last checked ${watch.lastCheckedAt ?? 'never'}`)
     return
   }

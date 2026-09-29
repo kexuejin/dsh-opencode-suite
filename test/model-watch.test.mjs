@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -157,4 +157,52 @@ test('reseeding drops what a wrong baseline announced and starts from what is on
   await watcher.check(listings({ go: ['a', 'b', 'c', 'd', 'e'], free: [] }))
   assert.deepEqual(watcher.pending('go').map(row => row.id), ['e'])
   assert.ok(readFileSync(statePath, 'utf8').includes('"seeded"'))
+})
+
+test('a model renamed in place is news, and the first pass never calls it one', async () => {
+  const watcher = new ModelWatcher({ now: () => at(26) })
+  // Baseline with names: adopting them is not a rename.
+  await watcher.check(listings({ go: [{ id: 'a', name: 'Alpha' }], free: [] }))
+  assert.deepEqual(watcher.renamed('go'), [], 'the baseline pass is not a rename')
+
+  const unchanged = await watcher.check(listings({ go: [{ id: 'a', name: 'Alpha' }], free: [] }))
+  assert.deepEqual(unchanged.notices, [], 'an unchanged name is not news')
+
+  const renamed = await watcher.check(listings({ go: [{ id: 'a', name: 'Alpha 2 Preview' }], free: [] }))
+  assert.deepEqual(renamed.notices, ['go:a (renamed)'])
+  assert.deepEqual(watcher.renamed('go'), [
+    { id: 'a', from: 'Alpha', to: 'Alpha 2 Preview', firstSeenAt: new Date(at(26)).toISOString() },
+  ])
+  // Once, not on every pass.
+  await watcher.check(listings({ go: [{ id: 'a', name: 'Alpha 2 Preview' }], free: [] }))
+  assert.equal(watcher.renamed('go').length, 1)
+  // And it clears with the rest of the news.
+  watcher.acknowledge('go')
+  assert.deepEqual(watcher.renamed('go'), [])
+})
+
+test('a state file from before name tracking is adopted, not reported as renamed', async () => {
+  const statePath = join(mkdtempSync(join(tmpdir(), 'dsh-watch-')), 'watched.json')
+  const watcher = new ModelWatcher({ statePath, now: () => at(26) })
+  await watcher.check(listings({ go: [{ id: 'a', name: 'Alpha' }], free: [] }))
+  // Simulate a state file written by the previous version: ids, no names.
+  const raw = JSON.parse(readFileSync(statePath, 'utf8'))
+  delete raw.go.names
+  delete raw.go.renamed
+  writeFileSync(statePath, JSON.stringify(raw))
+
+  const restored = new ModelWatcher({ statePath, now: () => at(26) })
+  const result = await restored.check(listings({ go: [{ id: 'a', name: 'Alpha' }], free: [] }))
+  assert.deepEqual(result.notices, [], 'recording a name for the first time is not a rename')
+  assert.deepEqual(restored.renamed('go'), [])
+  await restored.check(listings({ go: [{ id: 'a', name: 'Alpha II' }], free: [] }))
+  assert.deepEqual(restored.renamed('go').map(row => row.to), ['Alpha II'], 'and the next real rename is caught')
+})
+
+test('a listing without names still works', async () => {
+  const watcher = new ModelWatcher({ now: () => at(26) })
+  await watcher.check(listings({ go: ['a'], free: [] }))
+  const result = await watcher.check(listings({ go: ['a', 'b'], free: [] }))
+  assert.deepEqual(result.notices, ['go:b'], 'bare ids are accepted')
+  assert.deepEqual(watcher.renamed('go'), [])
 })

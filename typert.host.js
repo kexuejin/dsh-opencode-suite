@@ -191,8 +191,16 @@ const modelNoticeSchema = z.object({
   firstSeenAt: z.string(),
 })
 
+const modelRenameSchema = z.object({
+  id: z.string(),
+  from: z.string(),
+  to: z.string(),
+  firstSeenAt: z.string(),
+})
+
 const modelWatchTierSchema = z.object({
   pending: z.array(modelNoticeSchema),
+  renamed: z.array(modelRenameSchema),
   gone: z.array(modelNoticeSchema),
   online: z.number(),
   onlineIds: z.array(z.string()),

@@ -262,6 +262,7 @@ window.__ModuleLoader__.load({
       newsHint: '后台每 {minutes} 分钟核对一次两档线上列表。下面是还没处理的变动。',
       newsNew: '新上线',
       newsGone: '已下架',
+      newsRenamed: '改名',
       newsSince: '首次发现 {when}',
       newsNone: '没有待处理的变动。',
       newsUnconfigured: '线上有 {n} 个还没上架',
@@ -518,6 +519,7 @@ window.__ModuleLoader__.load({
       newsHint: 'Both tiers\' online listings are checked every {minutes} minutes in the background. Here is what is still unhandled.',
       newsNew: 'new online',
       newsGone: 'delisted',
+      newsRenamed: 'renamed',
       newsSince: 'first seen {when}',
       newsNone: 'Nothing unhandled.',
       newsUnconfigured: '{n} online but not adopted',
@@ -1899,13 +1901,18 @@ window.__ModuleLoader__.load({
     function TierNews(props) {
       const { t, tierId, news, busy, onCheck, onAdopt, onDismiss, onReseed } = props
       const pending = news && Array.isArray(news.pending) ? news.pending : []
+      const renamed = news && Array.isArray(news.renamed) ? news.renamed : []
       const gone = news && Array.isArray(news.gone) ? news.gone : []
       const unadopted = news && Array.isArray(news.unconfigured) ? news.unconfigured.length : 0
-      if (pending.length === 0 && gone.length === 0 && unadopted === 0) return null
+      if (pending.length === 0 && renamed.length === 0 && gone.length === 0 && unadopted === 0) return null
       return React.createElement('div', { style: styles.barRow },
         pending.length > 0
           ? React.createElement('p', { style: { ...styles.hint, fontWeight: 500 } },
             `${t('newsNew')}: ${pending.map(item => item.id).join(', ')}`)
+          : null,
+        renamed.length > 0
+          ? React.createElement('p', { style: styles.hint },
+            `${t('newsRenamed')}: ${renamed.map(item => `${item.id}（${item.from} → ${item.to}）`).join(', ')}`)
           : null,
         gone.length > 0
           ? React.createElement('p', { style: styles.hint },
@@ -1983,7 +1990,10 @@ window.__ModuleLoader__.load({
       // NEW MODELS ONLY. The online-but-not-adopted backlog is a to-do list that
       // lives on the card; folding it into a pill labelled "new models" made 94
       // unadopted models read as 94 new ones.
-      const pending = news !== null ? news.pendingTotal : 0
+      // New ids and renames are both news; the unadopted backlog is not.
+      const pending = news !== null
+        ? news.pendingTotal + (Array.isArray(news.renamed) ? news.renamed.length : 0)
+        : 0
       const unseen = pending - state.suppressed
       return React.createElement('div', { style: styles.dockRoot },
         unseen > 0
@@ -2685,6 +2695,8 @@ window.__ModuleLoader__.load({
             news: status && status.modelWatch
               ? {
                   pendingTotal: status.modelWatch.pendingTotal,
+                  renamed: (Object.values(status.modelWatch.tiers ?? {}))
+                    .flatMap(tier => Array.isArray(tier.renamed) ? tier.renamed : []),
                   tiers: status.modelWatch.tiers,
                   unconfigured: (Object.values(status.modelWatch.tiers ?? {}))
                     .flatMap(tier => Array.isArray(tier.unconfigured) ? tier.unconfigured : []),

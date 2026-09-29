@@ -1168,3 +1168,27 @@ test('a tier reports its own news inside its own card', async (t) => {
   }))
   assert.equal(quiet, '', 'a tier with no news renders nothing at all')
 })
+
+test('a rename is news in the tier card and in the dock pill', async (t) => {
+  const react = await loadReact(t)
+  const loaded = await loadModule(t)
+  if (!loaded || react === null) return
+  const { React, renderToString } = react
+  const { TierNews, DockPills } = loaded.module.__test
+  const noop = () => {}
+  const renamed = [{ id: 'longcat-2.0', from: 'Longcat 2.0', to: 'LongCat 2.5 Preview', firstSeenAt: '2026-09-29T00:00:00.000Z' }]
+
+  const tier = renderToString(React.createElement(TierNews, {
+    t: key => key, tierId: 'go', news: { pending: [], renamed, gone: [], unconfigured: [] },
+    busy: null, onCheck: noop, onAdopt: noop, onDismiss: noop, onReseed: noop,
+  }))
+  assert.ok(tier.includes('newsRenamed'), 'a rename is reported')
+  assert.ok(tier.includes('LongCat 2.5 Preview'), 'with the new name')
+  assert.ok(tier.includes('Longcat 2.0'), 'and the old one, so the change is legible')
+
+  const pill = dockPills(react, loaded, {
+    news: { pendingTotal: 0, renamed, tiers: {} },
+    usage: null, error: null, suppressed: 0,
+  })
+  assert.match(pill.text, /dockNews 1/, 'a rename alone raises the new-model pill')
+})

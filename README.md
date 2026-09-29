@@ -252,6 +252,11 @@ seen in `$DSH_HOME/opencode-suite.watched.json`.
 - After that, each new id is announced **once**, stamped with when it was first
   seen, and stays on the card until you act. A delisted id is reported the same
   way; one that comes back is news again.
+- **Names are compared too.** A provider renaming a model in place is how you
+  learn its capabilities moved, so a changed display name on a known id is
+  reported as a rename (`id（旧名 → 新名）`) rather than passing silently. The
+  first pass over a listing only records names, and a state file written before
+  names were tracked is adopted without reporting a rename nobody made.
 - The card (**模型上新提醒 / New models**) lists both tiers with per-tier
   actions: *fetch into the Go tier*, *adopt into the free tier*, or *dismiss*.
   `oc_model_status` and `oc_suite_status` report the same news in text, and a

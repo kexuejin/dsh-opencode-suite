@@ -25,7 +25,7 @@ export const WATCHED_TIERS = ['go', 'free']
 const STATE_VERSION = 1
 
 function emptyTier() {
-  return { seeded: false, seen: [], pending: {}, gone: {} }
+  return { seeded: false, seen: [], names: {}, pending: {}, renamed: {}, gone: {} }
 }
 
 function normalizeIds(value) {
@@ -47,7 +47,17 @@ function readState(document) {
     for (const [id, at] of Object.entries(raw.gone ?? {})) {
       if (typeof id === 'string' && id.length > 0 && typeof at === 'string') gone[id] = at
     }
-    state[tier] = { seeded: raw.seeded === true, seen: normalizeIds(raw.seen), pending, gone }
+    const names = {}
+    for (const [id, name] of Object.entries(raw.names ?? {})) {
+      if (typeof id === 'string' && typeof name === 'string') names[id] = name
+    }
+    const renamed = {}
+    for (const [id, entry] of Object.entries(raw.renamed ?? {})) {
+      if (entry !== null && typeof entry === 'object' && typeof entry.from === 'string' && typeof entry.to === 'string') {
+        renamed[id] = { from: entry.from, to: entry.to, at: typeof entry.at === 'string' ? entry.at : '' }
+      }
+    }
+    state[tier] = { seeded: raw.seeded === true, seen: normalizeIds(raw.seen), names, pending, renamed, gone }
   }
   return state
 }
@@ -99,10 +109,26 @@ export class ModelWatcher {
    * @param {string[]} liveIds - the ids the endpoint serves right now.
    * @returns {{added: string[], gone: string[], first: boolean}} what this pass noticed.
    */
-  observe(tierId, liveIds) {
+  /**
+   * Fold one tier's live listing into the state.
+   *
+   * Entries are `{id, name}`; a bare string is accepted so callers that only
+   * carry ids keep working. A model that was already seen under a DIFFERENT
+   * display name is a rename, which is news in its own right — a provider
+   * renaming a model is how a user learns its capabilities moved.
+   * @param {string} tierId - `go` or `free`.
+   * @param {Array<{id: string, name?: string}|string>} entries - the live listing.
+   * @returns `{added, renamed, gone, first}`.
+   */
+  observe(tierId, entries) {
     const tier = this.state[tierId] ?? emptyTier()
     this.state[tierId] = tier
     const at = new Date(this.now()).toISOString()
+    const live = entries.map(entry => (typeof entry === 'string' ? { id: entry, name: null } : {
+      id: entry?.id,
+      name: typeof entry?.name === 'string' && entry.name.length > 0 ? entry.name : null,
+    })).filter(entry => typeof entry.id === 'string' && entry.id.length > 0)
+    const liveIds = live.map(entry => entry.id)
     // The first pass over a tier is its baseline: adopt whatever is online
     // without announcing it. That is what a fresh install, a state file that
     // could not be read, and a restart after the file was deleted all look
@@ -110,41 +136,58 @@ export class ModelWatcher {
     if (!tier.seeded) {
       tier.seeded = true
       tier.seen = [...new Set(liveIds)]
-      return { added: [], gone: [], first: true }
+      for (const entry of live) if (entry.name !== null) tier.names[entry.id] = entry.name
+      return { added: [], renamed: [], gone: [], first: true }
     }
     // `seen` is the previous listing, not a union: an id that left and came
     // back is new again, which is what makes the return trip announceable.
     const previous = new Set(tier.seen)
-    const live = new Set(liveIds)
+    const present = new Set(liveIds)
     const added = []
-    for (const id of liveIds) {
-      if (previous.has(id)) continue
-      if (tier.pending[id] === undefined) tier.pending[id] = at
-      added.push(id)
+    const renamed = []
+    for (const entry of live) {
+      if (!previous.has(entry.id)) {
+        if (tier.pending[entry.id] === undefined) tier.pending[entry.id] = at
+        added.push(entry.id)
+      } else if (entry.name !== null) {
+        const before = tier.names[entry.id]
+        // No recorded name means this state predates name tracking (or the
+        // listing carried none); recording it is not a rename.
+        if (before !== undefined && before !== entry.name) {
+          if (tier.renamed[entry.id] === undefined) tier.renamed[entry.id] = { from: before, to: entry.name, at }
+          renamed.push(entry.id)
+        }
+        tier.names[entry.id] = entry.name
+      }
     }
     const gone = []
     for (const id of previous) {
-      if (live.has(id)) continue
+      if (present.has(id)) continue
       gone.push(id)
       if (tier.gone[id] === undefined) tier.gone[id] = at
     }
-    // A model that came back is no longer gone.
+    // A model that came back is no longer gone, and is no longer "renamed" to
+    // whatever it was called before it left.
     for (const id of Object.keys(tier.gone)) {
-      if (live.has(id)) delete tier.gone[id]
+      if (present.has(id)) delete tier.gone[id]
     }
-    tier.seen = [...new Set(liveIds)]
-    return { added, gone, first: false }
+    tier.seen = [...present]
+    return { added, renamed, gone, first: false }
   }
 
   /**
-   * Drop a tier's pending and gone sets — the card's "dismiss" action.
+   * Drop one tier's notices, keeping what it has seen.
+   *
+   * Only the notice goes: the seen set stays, so a dismissed id is not
+   * re-announced until it leaves and comes back.
    * @param {string} tierId - `go` or `free`.
    * @returns {number} how many pending ids were dropped.
    */
   acknowledge(tierId) {
     const tier = this.state[tierId] ?? emptyTier()
-    const dropped = Object.keys(tier.pending).length
+    const dropped = Object.keys(tier.pending).length + Object.keys(tier.renamed).length
     tier.pending = {}
+    tier.renamed = {}
     tier.gone = {}
     this.save()
     return dropped
@@ -181,6 +224,15 @@ export class ModelWatcher {
       .map(([id, firstSeenAt]) => ({ id, firstSeenAt }))
   }
 
+  /** The ids whose display name changed, oldest notice first. */
+  renamed(tierId) {
+    const tier = this.state[tierId]
+    if (tier === undefined) return []
+    return Object.entries(tier.renamed)
+      .sort((a, b) => a[1].at.localeCompare(b[1].at))
+      .map(([id, entry]) => ({ id, from: entry.from, to: entry.to, firstSeenAt: entry.at }))
+  }
+
   /** The ids that left a tier's listing, oldest notice first. */
   gone(tierId) {
     const tier = this.state[tierId]
@@ -204,6 +256,7 @@ export class ModelWatcher {
     for (const tierId of WATCHED_TIERS) {
       tiers[tierId] = {
         pending: this.pending(tierId),
+        renamed: this.renamed(tierId),
         gone: this.gone(tierId),
         online: this.state[tierId]?.seen.length ?? 0,
         // The ids the endpoint serves, so a caller can intersect that with what
@@ -242,7 +295,9 @@ export class ModelWatcher {
             failure = error instanceof Error ? error.message : String(error)
             continue
           }
-          notices.push(...this.observe(tierId, liveIds).added.map(id => `${tierId}:${id}`))
+          const outcome = this.observe(tierId, liveIds)
+          notices.push(...outcome.added.map(id => `${tierId}:${id}`))
+          notices.push(...outcome.renamed.map(id => `${tierId}:${id} (renamed)`))
         }
         this.lastCheckedAt = new Date(this.now()).toISOString()
         this.lastError = failure
