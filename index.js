@@ -1152,6 +1152,21 @@ export class OpenCodeSuite extends TypertRemoteService {
     const baseURL = tierId === 'go'
       ? (cfg.modelsBaseUrl || DEFAULT_MODELS_BASE_URL)
       : (cfg.freeModelsBaseUrl || DEFAULT_FREE_MODELS_BASE_URL)
+    // ONE definition of "what is online", shared by the watch, the drift view
+    // and the adopt action: the direct fetch, exactly as refreshModels does it.
+    // Preferring llm.discoverModels here made the watch read a SMALLER set than
+    // the one a fetch brings in — 27 ids against 44 on the same endpoint — so a
+    // model the provider had just added was invisible to the notice while being
+    // visible in the model list. Discovery is now only the fallback for when the
+    // direct fetch yields nothing.
+    const apiKey = tierId === 'go' ? await this.optionalActiveKey() : undefined
+    const direct = await fetchModelListings({
+      baseUrl: baseURL,
+      apiKey,
+      timeoutMs: cfg.timeoutMs,
+      fetchImpl: this.fetchModelsImpl,
+    })
+    if (direct.length > 0) return direct
     const llm = this.ctx.get('llm')
     if (llm && typeof llm.discoverModels === 'function') {
       try {
@@ -1164,16 +1179,10 @@ export class OpenCodeSuite extends TypertRemoteService {
         if (parsed.length > 0) return parsed
       } catch (error) {
         this.logger?.debug?.(`[opencode-suite] discovery for "${tier.route}" failed`
-          + ` (${messageOf(error)}); falling back to a direct fetch`)
+          + ` (${messageOf(error)}); the direct listing was empty too`)
       }
     }
-    const apiKey = tierId === 'go' ? await this.optionalActiveKey() : undefined
-    return await fetchModelListings({
-      baseUrl: baseURL,
-      apiKey,
-      timeoutMs: cfg.timeoutMs,
-      fetchImpl: this.fetchModelsImpl,
-    })
+    return direct
   }
 
   /**

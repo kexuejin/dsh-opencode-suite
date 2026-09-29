@@ -1332,3 +1332,50 @@ test('a reader triggers a due check, so a restart is not silent for an interval'
   assert.equal(calls, 0, 'a fresh check is not repeated on every poll')
   await root.fiber.dispose()
 })
+
+test('the watch and the adopt action read the SAME listing, not a smaller one', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  // The real regression: the watch preferred llm.discoverModels, which returned a
+  // 27-id subset while a direct fetch of the same endpoint returned 44. A model
+  // the provider had just added was therefore invisible to the notice while
+  // being visible in the model list.
+  const online = ['grok-4.6', 'longcat-2.5-preview-free', 'muse-spark-1.3-contributor']
+  const discovered = ['grok-4.6', 'muse-spark-1.3-contributor']
+  const llms = { registered: [], adapter: null, registerAdapter: () => ({ replace: () => {} }), discoverModels: async () => discovered }
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context, { llm: llms })
+  plugin.fetchModelsImpl = async url => new Response(JSON.stringify({
+    data: online.map(id => ({ id, name: id })),
+  }), { status: 200, headers: { 'content-type': 'application/json' } })
+
+  await plugin.checkModels({ fresh: true })
+  const report = await plugin.modelWatchReport()
+  assert.deepEqual(report.tiers.go.onlineIds, online,
+    'the watch sees what a fetch brings in, not the smaller discovery set')
+  assert.ok(report.tiers.go.onlineIds.includes('longcat-2.5-preview-free'))
+
+  // A second pass with one more id online is news, which is the whole point.
+  online.push('hy4-preview')
+  await plugin.checkModels({ fresh: true })
+  const after = await plugin.modelWatchReport()
+  assert.deepEqual(after.tiers.go.pending.map(row => row.id), ['hy4-preview'],
+    'an id the earlier listing lacked is announced')
+  await root.fiber.dispose()
+})
+
+test('discovery is still the fallback when the direct listing is empty', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context, {
+    llm: { discoverModels: async () => [{ id: 'from-discovery', name: 'From discovery' }] },
+  })
+  plugin.fetchModelsImpl = async () => new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+
+  const report = await plugin.modelWatchReport()
+  assert.equal(report.tiers.go.onlineIds.length, 0, 'an empty direct listing still seeds as empty')
+  await plugin.checkModels({ fresh: true })
+  const after = await plugin.modelWatchReport()
+  assert.deepEqual(after.tiers.go.onlineIds, ['from-discovery'],
+    'discovery answers when the endpoint gave us nothing')
+  await root.fiber.dispose()
+})
