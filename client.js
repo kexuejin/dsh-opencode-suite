@@ -259,6 +259,9 @@ window.__ModuleLoader__.load({
       newsGone: '已下架',
       newsSince: '首次发现 {when}',
       newsNone: '没有待处理的变动。',
+      newsUnconfigured: '线上有 {n} 个还没上架',
+      newsUnconfiguredHint: '它们不「新」，所以不会进上新通报；点上面的动作就能上架。',
+      newsNeverChecked: '还没核对过线上列表。',
       newsFetchGo: '拉取到 Go 档',
       newsAdoptFree: '上架到免费档',
       newsDismiss: '知道了',
@@ -505,6 +508,9 @@ window.__ModuleLoader__.load({
       newsGone: 'delisted',
       newsSince: 'first seen {when}',
       newsNone: 'Nothing unhandled.',
+      newsUnconfigured: '{n} online but not adopted',
+      newsUnconfiguredHint: 'They are not new, so they never enter the new-model notice; the action above adopts them.',
+      newsNeverChecked: 'The online listings have not been checked yet.',
       newsFetchGo: 'Fetch into the Go tier',
       newsAdoptFree: 'Adopt into the free tier',
       newsDismiss: 'Dismiss',
@@ -1957,9 +1963,12 @@ window.__ModuleLoader__.load({
       const usage = state.usage
       // The nudge is local: dismissing it here must not clear the host's
       // pending list, which is the work list the settings card acts on.
-      const unseen = news !== null && news.pendingTotal > state.suppressed
+      const pending = news !== null ? news.pendingTotal : 0
+      const unadopted = news !== null && Array.isArray(news.unconfigured) ? news.unconfigured.length : 0
+      const unseen = news !== null && pending > state.suppressed
+      const toShow = news !== null ? (pending - state.suppressed) + unadopted : 0
       return React.createElement('div', { style: styles.dockRoot },
-        unseen
+        toShow > 0
           ? React.createElement('button', {
               type: 'button',
               style: { ...styles.dockPill, ...styles.dockButton },
@@ -1967,7 +1976,7 @@ window.__ModuleLoader__.load({
               onClick: dismissNews,
             },
               React.createElement('span', { style: styles.dockDot, 'aria-hidden': 'true' }),
-              t('dockNews').replace('{n}', String(news.pendingTotal - state.suppressed)),
+              t('dockNews').replace('{n}', String(toShow)),
             )
           : null,
         usage !== null && usage.tokens > 0
@@ -1991,6 +2000,7 @@ window.__ModuleLoader__.load({
       const models = data && Array.isArray(data.models) ? data.models : []
       const days = data && Array.isArray(data.days) ? data.days : []
       const sweep = data && data.sweep ? data.sweep : null
+      const unadopted = data && Array.isArray(data.unconfigured) ? data.unconfigured.length : 0
       const peak = days.reduce((max, day) => (day.total > max ? day.total : max), 0)
       const cacheShare = totals && totals.total > 0 ? (totals.cacheRead / totals.total) * 100 : 0
 
@@ -2650,7 +2660,12 @@ window.__ModuleLoader__.load({
           const today = usage && usage.days && usage.days.length > 0 ? usage.days[usage.days.length - 1] : null
           dockState.patch({
             news: status && status.modelWatch
-              ? { pendingTotal: status.modelWatch.pendingTotal, tiers: status.modelWatch.tiers }
+              ? {
+                  pendingTotal: status.modelWatch.pendingTotal,
+                  tiers: status.modelWatch.tiers,
+                  unconfigured: (Object.values(status.modelWatch.tiers ?? {}))
+                    .flatMap(tier => Array.isArray(tier.unconfigured) ? tier.unconfigured : []),
+                }
               : null,
             usage: usage && usage.enabled
               ? { tokens: today === null ? 0 : today.total, calls: today === null ? 0 : today.calls, source: usage.source }

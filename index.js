@@ -679,12 +679,26 @@ export class OpenCodeSuite extends TypertRemoteService {
   }
 
   /** The watcher's wire report, read against the live config. */
-  modelWatchReport() {
+  async modelWatchReport() {
     const cfg = this.current()
-    return this.modelWatcher.report({
+    const report = this.modelWatcher.report({
       enabled: cfg.modelWatchEnabled !== false,
       intervalMs: cfg.modelWatchIntervalMs,
     })
+    // "Online but not exposed" is a different fact from "new since last check",
+    // and on a tier this profile never adopted it is the useful one: those ids
+    // are not being announced because the first pass took them as its baseline,
+    // and nothing else would ever surface them.
+    const exposed = new Set((await this.listAvailableModels(cfg)).filter(entry => entry.enabled).map(entry => entry.id))
+    for (const tierId of WATCHED_TIERS) {
+      const onlineIds = report.tiers[tierId]?.onlineIds ?? []
+      report.tiers[tierId].unconfigured = tierId === 'go'
+        ? onlineIds.filter(id => !exposed.has(id))
+        : onlineIds
+    }
+    report.unconfiguredTotal = WATCHED_TIERS
+      .reduce((total, tierId) => total + report.tiers[tierId].unconfigured.length, 0)
+    return report
   }
 
   /**
@@ -699,6 +713,21 @@ export class OpenCodeSuite extends TypertRemoteService {
     timer.unref?.()
     this.modelWatchTimer = timer
     return () => this.stopModelWatch()
+  }
+
+  /**
+   * Whether a check is due, judged on the last pass rather than on a timer that
+   * only ticks while the process lives.
+   * @returns {boolean} true when the configured interval has elapsed.
+   */
+  modelWatchDue() {
+    const cfg = this.current()
+    if (cfg.modelWatchEnabled === false) return false
+    const last = this.modelWatcher.lastCheckedAt
+    if (typeof last !== 'string') return true
+    const at = Date.parse(last)
+    if (!Number.isFinite(at)) return true
+    return Date.now() - at >= cfg.modelWatchIntervalMs
   }
 
   stopModelWatch() {
@@ -1676,6 +1705,10 @@ export class OpenCodeSuite extends TypertRemoteService {
 
   async status() {
     const cfg = this.current()
+    // A reader counts as a clock: whoever looks after a restart gets a check
+    // now, not after the interval. Not awaited, so a page load never waits on
+    // two listing endpoints.
+    if (this.modelWatchDue()) void this.checkModels()
     const fetchedAt = new Date().toISOString()
     const entries = this.pool.entries()
     const availableModels = await this.listAvailableModels(cfg)
@@ -1734,7 +1767,7 @@ export class OpenCodeSuite extends TypertRemoteService {
         }
       }),
       freeTier,
-      modelWatch: this.modelWatchReport(),
+      modelWatch: await this.modelWatchReport(),
       // The card's own reading of the Config, so a write that silently failed
       // shows up here rather than as a control that appears to do nothing.
       usageLogEnabled: this.current().usageLogEnabled !== false,

@@ -176,6 +176,10 @@ function appendModelNews(lines, watch) {
   }
   const go = watch.tiers.go
   const free = watch.tiers.free
+  const unadopted = ['go', 'free'].flatMap(tierId => watch.tiers[tierId].unconfigured ?? [])
+  if (unadopted.length > 0) {
+    lines.push(`Online but NOT adopted (${unadopted.length}) — not new, so never announced: ${unadopted.join(', ')}`)
+  }
   if (go.pending.length === 0 && go.gone.length === 0 && free.pending.length === 0 && free.gone.length === 0) {
     lines.push(`Model watch: nothing new · last checked ${watch.lastCheckedAt ?? 'never'}`)
     return
@@ -380,9 +384,9 @@ function modelStatusTool(resolve) {
           lines.push('')
           lines.push(...renderTierBlock(value.tiers[tierId]))
         }
-        // The watcher's memory is what separates "nothing changed" from "changed
-        // and nobody acted": the drift above is recomputed on every call, while
-        // this is what the background pass noticed and is still holding.
+        // The watcher's memory separates "nothing changed" from "changed and
+        // nobody acted": the drift above is recomputed on every call, while this
+        // is what a pass noticed and still holds.
         lines.push('')
         appendModelNews(lines, value.modelWatch)
         return [{ type: 'text', text: lines.join('\n') }]
@@ -392,6 +396,9 @@ function modelStatusTool(resolve) {
     async execute(_args, exec) {
       try {
         const suite = requireSuite(resolve)
+        // The watch report rides THIS payload. Without it the renderer above had
+        // nothing to read and always printed "no report in this payload".
+        const modelWatch = await suite.modelWatchReport()
         const tiers = {}
         for (const tierId of TIER_IDS) {
           try {
@@ -400,7 +407,7 @@ function modelStatusTool(resolve) {
             tiers[tierId] = { tier: tierId, route: TIERS[tierId].route, error: messageOf(error) }
           }
         }
-        return { fetchedAt: new Date().toISOString(), tiers }
+        return { fetchedAt: new Date().toISOString(), tiers, modelWatch }
       } catch (error) {
         return { error: messageOf(error) }
       }

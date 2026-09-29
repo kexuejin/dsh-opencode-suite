@@ -180,7 +180,14 @@ export class ModelWatcher {
   report({ enabled = true, intervalMs = 0 } = {}) {
     const tiers = {}
     for (const tierId of WATCHED_TIERS) {
-      tiers[tierId] = { pending: this.pending(tierId), gone: this.gone(tierId), online: this.state[tierId]?.seen.length ?? 0 }
+      tiers[tierId] = {
+        pending: this.pending(tierId),
+        gone: this.gone(tierId),
+        online: this.state[tierId]?.seen.length ?? 0,
+        // The ids the endpoint serves, so a caller can intersect that with what
+        // the profile actually exposes instead of re-fetching the listing.
+        onlineIds: [...(this.state[tierId]?.seen ?? [])],
+      }
     }
     return {
       enabled,
@@ -189,6 +196,7 @@ export class ModelWatcher {
       error: this.lastError,
       pendingTotal: this.pendingCount(),
       tiers,
+      seeded: WATCHED_TIERS.every(tierId => this.state[tierId]?.seeded === true),
     }
   }
 
@@ -216,7 +224,10 @@ export class ModelWatcher {
         }
         this.lastCheckedAt = new Date(this.now()).toISOString()
         this.lastError = failure
-        if (notices.length > 0 || failure !== null) this.save()
+        // EVERY pass persists, baseline included. Saving only on news left a
+        // silent deployment with no file at all, so neither the baseline nor the
+        // time of the last check could be read back from disk.
+        this.save()
         return { notices }
       })
       .finally(() => { this.running = undefined })

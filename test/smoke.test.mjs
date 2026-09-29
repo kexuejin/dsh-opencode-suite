@@ -1289,3 +1289,46 @@ test('a delivery failure with no cause at all still reads as a sentence', async 
   assert.ok(result.error.length > 0)
   await root.fiber.dispose()
 })
+
+
+test('the watch report names what is online but never adopted', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context)
+  const listings = { go: ['grok-4.7', 'brand-new'], free: ['big-pickle', 'ling-3.0-flash-fin-free'] }
+  plugin.tierListing = async tierId => (listings[tierId] ?? []).map(id => ({ id, name: id }))
+  plugin.listAvailableModels = async () => [{ id: 'grok-4.7', enabled: true }]
+
+  await plugin.checkModels({ fresh: true })
+  const report = await plugin.modelWatchReport()
+  // "Online but not exposed" is the fact a profile that never adopted a tier
+  // actually needs: those ids are not new, so they never enter the notice, and
+  // nothing else surfaces them.
+  assert.deepEqual(report.tiers.go.unconfigured, ['brand-new'])
+  assert.deepEqual(report.tiers.free.unconfigured, ['big-pickle', 'ling-3.0-flash-fin-free'],
+    'the free tier is reported as fully unadopted rather than as new')
+  assert.equal(report.unconfiguredTotal, 3)
+  assert.equal(report.pendingTotal, 0, 'and none of them is a new-model notice')
+  await root.fiber.dispose()
+})
+
+test('a reader triggers a due check, so a restart is not silent for an interval', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin } = await boot(harness.OpenCodeSuite, harness.Context)
+  const listings = { go: ['a'], free: [] }
+  let calls = 0
+  plugin.tierListing = async tierId => { calls += 1; return (listings[tierId] ?? []).map(id => ({ id, name: id })) }
+
+  assert.equal(plugin.modelWatchDue(), true, 'never checked means due')
+  await plugin.status()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.ok(calls > 0, 'reading the status performs the first check')
+
+  calls = 0
+  assert.equal(plugin.modelWatchDue(), false, 'and it is not due again straight away')
+  await plugin.status()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(calls, 0, 'a fresh check is not repeated on every poll')
+  await root.fiber.dispose()
+})

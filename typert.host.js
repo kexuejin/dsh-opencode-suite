@@ -195,10 +195,14 @@ const modelWatchTierSchema = z.object({
   pending: z.array(modelNoticeSchema),
   gone: z.array(modelNoticeSchema),
   online: z.number(),
+  onlineIds: z.array(z.string()),
+  unconfigured: z.array(z.string()),
 })
 
 const modelWatchSchema = z.object({
   enabled: z.boolean(),
+  seeded: z.boolean(),
+  unconfiguredTotal: z.number(),
   intervalMs: z.number(),
   lastCheckedAt: z.string().nullable(),
   error: z.string().nullable(),

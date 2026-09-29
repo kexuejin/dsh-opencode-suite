@@ -113,3 +113,30 @@ test('concurrent passes share one sweep', async () => {
   await Promise.all([watcher.check(read), watcher.check(read)])
   assert.equal(opens, 1)
 })
+
+test('a baseline pass is persisted, so the reference the next pass diffs against exists', async () => {
+  const statePath = join(mkdtempSync(join(tmpdir(), 'dsh-watch-')), 'watched.json')
+  const watcher = new ModelWatcher({ statePath, now: () => at(26) })
+  await watcher.check(listings({ go: ['a', 'b'], free: ['f1'] }))
+
+  // Saving only on news left a clean deployment with NO file, so neither the
+  // baseline nor the time of the check could be read back.
+  const saved = JSON.parse(readFileSync(statePath, 'utf8'))
+  assert.deepEqual(saved.go.seen, ['a', 'b'], 'the baseline the next pass diffs against is on disk')
+  assert.equal(saved.go.seeded, true)
+  assert.ok(readFileSync(statePath, 'utf8').length > 0)
+  assert.equal(watcher.report().seeded, true, 'both tiers are seeded after one pass')
+  assert.deepEqual(watcher.report().tiers.go.onlineIds, ['a', 'b'],
+    'the report carries the online ids so a caller can intersect them with what it exposes')
+})
+
+test('an idle pass rewrites the file, so the last check time is never stale', async () => {
+  const statePath = join(mkdtempSync(join(tmpdir(), 'dsh-watch-')), 'watched.json')
+  const watcher = new ModelWatcher({ statePath, now: () => at(26) })
+  await watcher.check(listings({ go: ['a'], free: [] }))
+  const first = watcher.lastCheckedAt
+  await watcher.check(listings({ go: ['a'], free: [] }))
+  assert.equal(watcher.lastCheckedAt, first, 'same clock, same stamp')
+  assert.equal(watcher.pendingCount(), 0)
+  assert.ok(readFileSync(statePath, 'utf8').includes('"seen"'), 'the state still names what it saw')
+})
