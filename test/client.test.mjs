@@ -1130,3 +1130,41 @@ test('the IM row offers the discovered targets and explains an empty one', async
   assert.ok(!/imFailed[^<]*<\/p><\/div><div[^>]*>.{0,40}delivery-failed/.test(failed),
     'the public code is not the sentence the person reads first')
 })
+
+test('a tier reports its own news inside its own card', async (t) => {
+  const react = await loadReact(t)
+  const loaded = await loadModule(t)
+  if (!loaded || react === null) return
+  const { React, renderToString } = react
+  const { ModelCard, FreeTierCard, TierNews } = loaded.module.__test
+  const news = tier => ({
+    pending: [{ id: 'brand-new', firstSeenAt: '2026-09-29T00:00:00.000Z' }],
+    gone: [],
+    unconfigured: ['a', 'b'],
+  })
+  const noop = () => {}
+
+  // One place reports the same subject twice: the model is listed in the pool,
+  // the fact that it is NEW was in a separate card. Both tiers now carry it.
+  const pool = renderToString(React.createElement(ModelCard, {
+    t: key => key, data: { availableModels: [{ id: 'brand-new', enabled: false }], modelMode: 'all', modelCapacities: {} },
+    sel: null, setSel: noop, busy: null, onSave: noop, onFetchModels: noop, fetching: false,
+    news: news('go'), onCheck: noop, onDismiss: noop, onReseed: noop,
+  }))
+  assert.ok(pool.includes('brand-new'), 'the pool card shows the new model')
+  assert.ok(pool.includes('newsNew'), 'and that it is new')
+
+  const free = renderToString(React.createElement(FreeTierCard, {
+    t: key => key, data: { configured: [], live: [], added: [], stale: [], revision: null },
+    sel: null, setSel: noop, busy: null, onApply: noop, onFetch: noop, fetching: false,
+    news: news('free'), onCheck: noop, onDismiss: noop, onReseed: noop,
+  }))
+  assert.ok(free.includes('newsNew'), 'the free card carries its own news')
+
+  // Nothing to say: no block, so a quiet tier stays quiet.
+  const quiet = renderToString(React.createElement(TierNews, {
+    t: key => key, tierId: 'go', news: { pending: [], gone: [], unconfigured: [] },
+    busy: null, onCheck: noop, onAdopt: noop, onDismiss: noop, onReseed: noop,
+  }))
+  assert.equal(quiet, '', 'a tier with no news renders nothing at all')
+})

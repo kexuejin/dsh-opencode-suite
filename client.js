@@ -1178,7 +1178,7 @@ window.__ModuleLoader__.load({
      * capacity inputs.
      */
     function ModelCard(props) {
-      const { t, data, sel, setSel, busy, onSave, onFetchModels, fetching, defaultOpen } = props
+      const { t, data, sel, setSel, busy, onSave, onFetchModels, fetching, defaultOpen, news, onCheck, onDismiss, onReseed } = props
       const [open, setOpen] = React.useState(defaultOpen === true)
       const [capsOpen, setCapsOpen] = React.useState(false)
       const available = Array.isArray(data && data.availableModels) ? data.availableModels : []
@@ -1239,6 +1239,11 @@ window.__ModuleLoader__.load({
           : row.capacitySource === 'catalog' ? t('capacityCatalog')
             : t('capacityNone')
       return React.createElement('div', { style: styles.card },
+        // The pool's own news, above the collapse: the model is listed here
+        // already, so the fact that it is NEW belongs here too.
+        React.createElement(TierNews, {
+          t, tierId: 'go', news, busy, onCheck, onAdopt: onSave, onDismiss, onReseed,
+        }),
         React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' } },
           React.createElement('div', { style: { minWidth: 0 } },
             React.createElement('h3', { style: styles.cardName }, t('modelTitle')),
@@ -1413,7 +1418,7 @@ window.__ModuleLoader__.load({
      * their values; a checked online row is an adoption.
      */
     function FreeTierCard(props) {
-      const { t, data, sel, setSel, busy, onApply, onFetch, fetching } = props
+      const { t, data, sel, setSel, busy, onApply, onFetch, fetching, news, onCheck, onDismiss, onReseed } = props
       const free = data || {}
       const configured = Array.isArray(free.configured) ? free.configured : []
       const live = Array.isArray(free.live) ? free.live : []
@@ -1436,6 +1441,11 @@ window.__ModuleLoader__.load({
         added.length > 0 ? t('freeAdded').replace('{n}', String(added.length)) : null,
       ].filter(Boolean).join(' · ')
       return React.createElement('div', { style: styles.card },
+        // The free tier's news sits with the free tier's models, for the same
+        // reason the pool's does.
+        React.createElement(TierNews, {
+          t, tierId: 'free', news, busy, onCheck, onAdopt: onApply, onDismiss, onReseed,
+        }),
         React.createElement('div', { style: styles.cardHead },
           React.createElement('div', { style: { minWidth: 0 } },
             React.createElement('h3', { style: styles.cardName }, t('freeTitle')),
@@ -1807,7 +1817,6 @@ window.__ModuleLoader__.load({
       const ready = report && report.available && withTargets.length > 0
       return React.createElement('div', { style: styles.barRow },
         React.createElement('div', { style: styles.fieldRow },
-          React.createElement('strong', null, t('imTitle')),
           React.createElement('label', { style: styles.fieldRow },
             React.createElement('input', {
               type: 'checkbox',
@@ -1880,95 +1889,74 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function ModelNewsCard(props) {
-      const {
-        t, watch, busy, onCheck, onAdopt, onDismiss, checking,
-        im, imConfig, imResult, onImPick, onImTest, imTesting, onReseed,
-      } = props
-      const enabled = watch ? watch.enabled !== false : true
-      const tiers = watch && watch.tiers ? watch.tiers : { go: { pending: [], gone: [] }, free: { pending: [], gone: [] } }
-      const rows = ['go', 'free'].map(tierId => ({
-        tierId,
-        label: tierId === 'go' ? t('poolTitle') : t('freeTitle'),
-        pending: Array.isArray(tiers[tierId]?.pending) ? tiers[tierId].pending : [],
-        gone: Array.isArray(tiers[tierId]?.gone) ? tiers[tierId].gone : [],
-      })).filter(row => row.pending.length > 0 || row.gone.length > 0)
-      const when = value => (value ? new Date(value).toLocaleString() : '')
+    /**
+     * One tier's watch news, rendered inside that tier's own card.
+     *
+     * A separate "new models" card reported about the same subjects the pool and
+     * free-tier cards already list, so the answer was split across two places:
+     * the model was visible in the pool, the fact that it was NEW was not.
+     */
+    function TierNews(props) {
+      const { t, tierId, news, busy, onCheck, onAdopt, onDismiss, onReseed } = props
+      const pending = news && Array.isArray(news.pending) ? news.pending : []
+      const gone = news && Array.isArray(news.gone) ? news.gone : []
+      const unadopted = news && Array.isArray(news.unconfigured) ? news.unconfigured.length : 0
+      if (pending.length === 0 && gone.length === 0 && unadopted === 0) return null
+      return React.createElement('div', { style: styles.barRow },
+        pending.length > 0
+          ? React.createElement('p', { style: { ...styles.hint, fontWeight: 500 } },
+            `${t('newsNew')}: ${pending.map(item => item.id).join(', ')}`)
+          : null,
+        gone.length > 0
+          ? React.createElement('p', { style: styles.hint },
+            `${t('newsGone')}: ${gone.map(item => item.id).join(', ')}`)
+          : null,
+        unadopted > 0
+          ? React.createElement('p', { style: styles.hint },
+            t('newsUnconfigured').replace('{n}', String(unadopted)))
+          : null,
+        React.createElement('div', { style: styles.actions },
+          pending.length > 0
+            ? React.createElement('button', {
+                style: styles.button,
+                disabled: busy !== null && busy !== undefined,
+                onClick: () => onAdopt(tierId, pending.map(item => item.id)),
+              }, tierId === 'go' ? t('newsFetchGo') : t('newsAdoptFree'))
+            : null,
+          React.createElement('button', {
+            style: styles.button,
+            disabled: busy !== null && busy !== undefined,
+            onClick: () => onCheck(tierId),
+          }, t('newsCheck')),
+          React.createElement('button', {
+            style: styles.button,
+            disabled: busy !== null && busy !== undefined,
+            onClick: () => onDismiss(tierId),
+          }, t('newsDismiss')),
+          React.createElement('button', {
+            style: styles.button,
+            title: t('newsReseedHint'),
+            disabled: busy !== null && busy !== undefined,
+            onClick: () => onReseed(tierId),
+          }, t('newsReseed')),
+        ),
+      )
+    }
 
-      return React.createElement('div', { style: { ...styles.card, ...(rows.length > 0 ? styles.bannerWarn : null) } },
+    /**
+     * Where new-model news goes out. The news itself lives in each tier's own
+     * card — this block is only the destination setting for it.
+     */
+    function ImNotifyCard(props) {
+      const { t, busy, im, imConfig, imResult, onImPick, onImTest, imTesting } = props
+      return React.createElement('div', { style: styles.card },
+        React.createElement('h3', { style: styles.cardName }, t('imTitle')),
         React.createElement(ImNotifyRow, {
           t, report: im, config: imConfig, busy, onPick: onImPick, onTest: onImTest,
           testing: imTesting, lastResult: imResult,
         }),
-        React.createElement('div', { style: styles.divider }),
-        React.createElement('div', { style: styles.cardHead },
-          React.createElement('h3', { style: styles.cardName }, t('newsTitle')),
-          React.createElement('div', { style: styles.row },
-            React.createElement('button', {
-              style: styles.button,
-              disabled: checking === true || !enabled,
-              onClick: onCheck,
-            }, checking === true ? t('refreshing') : t('newsCheck')),
-            watch && watch.lastCheckedAt
-              ? React.createElement('span', { style: styles.dayLabel },
-                  t('newsChecked').replace('{when}', when(watch.lastCheckedAt)))
-              : null,
-          ),
-        ),
-        React.createElement('p', { style: styles.cardMeta },
-          enabled
-            ? t('newsHint').replace('{minutes}', String(Math.round((watch?.intervalMs ?? 0) / 60000)))
-            : t('newsOff')),
-        watch && watch.error
-          ? React.createElement('p', { style: styles.error }, t('newsFailed').replace('{error}', watch.error))
-          : null,
-        rows.length === 0
-          ? React.createElement('p', { style: styles.hint }, t('newsNone'))
-          : rows.map(row => React.createElement('div', { key: row.tierId, style: styles.barRow },
-              React.createElement('div', { style: styles.barHead },
-                React.createElement('span', { style: { fontWeight: 600 } }, `${row.label} · ${t('newsNew')} ${row.pending.length}`),
-                React.createElement('span', null, `${t('newsGone')} ${row.gone.length}`),
-              ),
-              row.pending.map(item => React.createElement('div', { key: `${row.tierId}-${item.id}`, style: styles.fieldRow },
-                React.createElement('code', null, item.id),
-                React.createElement('span', { style: styles.dayLabel },
-                  t('newsSince').replace('{when}', when(item.firstSeenAt))),
-              )),
-              row.gone.map(item => React.createElement('div', { key: `${row.tierId}-gone-${item.id}`, style: styles.fieldRow },
-                React.createElement('code', { style: { textDecoration: 'line-through', opacity: 0.7 } }, item.id),
-              )),
-              React.createElement('div', { style: styles.actions },
-                React.createElement('button', {
-                  style: styles.button,
-                  disabled: busy !== null && busy !== undefined,
-                  onClick: () => onAdopt(row.tierId, row.pending.map(item => item.id)),
-                }, row.tierId === 'go' ? t('newsFetchGo') : t('newsAdoptFree')),
-                React.createElement('button', {
-                  style: styles.button,
-                  disabled: busy !== null && busy !== undefined,
-                  onClick: () => onDismiss(row.tierId),
-                }, t('newsDismiss')),
-                React.createElement('button', {
-                  style: styles.button,
-                  title: t('newsReseedHint'),
-                  disabled: busy !== null && busy !== undefined,
-                  onClick: () => onReseed(row.tierId),
-                }, t('newsReseed')),
-              ),
-            )),
       )
     }
-
-    /* ------------------------------------------------------------------ *
-     * Composer dock
-     * ------------------------------------------------------------------ */
-
-    /**
-     * One bare observable for the dock's facts, owned by the apply closure and
-     * shared by every render occurrence: the same snapshot reference until a
-     * fact moves, and one poller no matter how many conversations are open.
-     * @returns the observable the renderer binds as `useDockState`.
-     */
     function createDockState() {
       let value = { news: null, usage: null, error: null, suppressed: 0 }
       const listeners = new Set()
@@ -2466,14 +2454,12 @@ window.__ModuleLoader__.load({
         })
       }
 
-      const remoteDismissNews = async (tierId) => {
-        const remote = await api()
-        if (!remote) throw new Error('opencodeSuite remote is unavailable')
-        await unwrapRemote(await remote.dismissModelNews(tierId))
+      const onCheckNews = (tierId) => {
+        runAction(async remote => remote.checkModels(), null).then(load)
       }
 
       const onDismissNews = (tierId) => {
-        runAction(() => remoteDismissNews(tierId), null).then(load)
+        runAction(async remote => remote.dismissModelNews(tierId), null).then(load)
       }
 
       const onReseedNews = (tierId) => {
@@ -2585,6 +2571,8 @@ window.__ModuleLoader__.load({
             React.createElement(ModelCard, {
               t, data, sel: modelSel, setSel: setModelSel, busy,
               onFetchModels, fetching,
+              news: data.modelWatch && data.modelWatch.tiers ? data.modelWatch.tiers.go : null,
+              onCheck: onCheckNews, onDismiss: onDismissNews, onReseed: onReseedNews,
               onSave: (patch, invalidMessage) => {
                 if (!patch) {
                   setNotice({ ok: false, text: `${t('saveFailed')}: ${invalidMessage}` })
@@ -2634,11 +2622,10 @@ window.__ModuleLoader__.load({
             ),
 
             React.createElement('div', { style: styles.divider }),
-            React.createElement(ModelNewsCard, {
-              t, watch: data.modelWatch, busy, checking: checkingModels,
-              onCheck: onCheckModels, onAdopt: onAdoptNews, onDismiss: onDismissNews,
+            React.createElement(ImNotifyCard, {
+              t, busy,
               im, imConfig: data.imNotify ?? { enabled: false, botId: '', targetId: '' },
-              imResult, onImPick, onImTest, imTesting, onReseed: onReseedNews,
+              imResult, onImPick, onImTest, imTesting,
             }),
 
             React.createElement('div', { style: styles.divider }),
@@ -2652,6 +2639,8 @@ window.__ModuleLoader__.load({
             React.createElement(FreeTierCard, {
               t, data: data.freeTier, sel: freeSel, setSel: setFreeSel, busy,
               onApply: onApplyFreeTier, onFetch: onFetchFreeTier, fetching: freeFetching,
+              news: data.modelWatch && data.modelWatch.tiers ? data.modelWatch.tiers.free : null,
+              onCheck: onCheckNews, onDismiss: onDismissNews, onReseed: onReseedNews,
             }),
 
             React.createElement('div', { style: styles.divider }),
@@ -2814,8 +2803,9 @@ window.__ModuleLoader__.load({
       ModelCard,
       FreeTierCard,
       SessionCard,
-      ModelNewsCard,
+      ImNotifyCard,
       ImNotifyRow,
+      TierNews,
       DockPills,
       createDockState,
       UsageBreakdownCard,
