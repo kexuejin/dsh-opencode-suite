@@ -126,6 +126,10 @@ function suiteStatusTool(resolve) {
         }
 
         lines.push('')
+        // The watch block belongs here too: this is the tool a person asks
+        // first, and it was the one place that stayed silent about new models.
+        appendModelNews(lines, value.modelWatch)
+
         lines.push(`Pooled catalog (${value.modelMode} mode, ${value.availableModels.length} entries,`
           + ` ${value.availableModels.filter(m => m.enabled).length} exposed):`)
         for (const model of value.availableModels) {
