@@ -1963,12 +1963,13 @@ window.__ModuleLoader__.load({
       const usage = state.usage
       // The nudge is local: dismissing it here must not clear the host's
       // pending list, which is the work list the settings card acts on.
+      // NEW MODELS ONLY. The online-but-not-adopted backlog is a to-do list that
+      // lives on the card; folding it into a pill labelled "new models" made 94
+      // unadopted models read as 94 new ones.
       const pending = news !== null ? news.pendingTotal : 0
-      const unadopted = news !== null && Array.isArray(news.unconfigured) ? news.unconfigured.length : 0
-      const unseen = news !== null && pending > state.suppressed
-      const toShow = news !== null ? (pending - state.suppressed) + unadopted : 0
+      const unseen = pending - state.suppressed
       return React.createElement('div', { style: styles.dockRoot },
-        toShow > 0
+        unseen > 0
           ? React.createElement('button', {
               type: 'button',
               style: { ...styles.dockPill, ...styles.dockButton },
@@ -1976,7 +1977,7 @@ window.__ModuleLoader__.load({
               onClick: dismissNews,
             },
               React.createElement('span', { style: styles.dockDot, 'aria-hidden': 'true' }),
-              t('dockNews').replace('{n}', String(toShow)),
+              t('dockNews').replace('{n}', String(unseen)),
             )
           : null,
         usage !== null && usage.tokens > 0

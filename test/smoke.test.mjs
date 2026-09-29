@@ -1379,3 +1379,23 @@ test('discovery is still the fallback when the direct listing is empty', async (
     'discovery answers when the endpoint gave us nothing')
   await root.fiber.dispose()
 })
+
+test('the free-tier backlog excludes what the profile has adopted', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, plugin, settings } = await boot(harness.OpenCodeSuite, harness.Context, {
+    // Two of the online ids are already on the free tier's configured list.
+    sections: { 'llm-pi-ai': { providers: { opencode: { models: [{ id: 'big-pickle' }, { id: 'ling-3.0-flash-fin-free' }] } } } },
+  })
+  const listings = { go: [], free: ['big-pickle', 'ling-3.0-flash-fin-free', 'gpt-5.6-luna', 'muse-spark-1.3-contributor-free'] }
+  plugin.tierListing = async tierId => (listings[tierId] ?? []).map(id => ({ id, name: id }))
+
+  await plugin.checkModels({ fresh: true })
+  const report = await plugin.modelWatchReport()
+  // Assuming every online id is unadopted kept the count stuck at the whole
+  // lineup after part of it had been adopted.
+  assert.deepEqual(report.tiers.free.unconfigured, ['gpt-5.6-luna', 'muse-spark-1.3-contributor-free'],
+    'adopted ids leave the backlog')
+  assert.equal(report.unconfiguredTotal, 2)
+  await root.fiber.dispose()
+})

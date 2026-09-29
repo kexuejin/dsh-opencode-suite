@@ -690,11 +690,22 @@ export class OpenCodeSuite extends TypertRemoteService {
     // are not being announced because the first pass took them as its baseline,
     // and nothing else would ever surface them.
     const exposed = new Set((await this.listAvailableModels(cfg)).filter(entry => entry.enabled).map(entry => entry.id))
+    // The free tier's configured list lives in the settings document, not in
+    // this plugin's catalog. Assuming every online id is unadopted would keep
+    // the count stuck at the whole lineup after half of it had been adopted.
+    let freeConfigured = new Set()
+    try {
+      const settings = this.ctx.get('settings')
+      if (settings) {
+        freeConfigured = new Set(readRouteModels(settings, TIERS.free.route).models.map(entry => entry.id))
+      }
+    } catch (error) {
+      this.logger?.debug?.(`opencode-suite: free-tier configured list unavailable: ${messageOf(error)}`)
+    }
     for (const tierId of WATCHED_TIERS) {
       const onlineIds = report.tiers[tierId]?.onlineIds ?? []
-      report.tiers[tierId].unconfigured = tierId === 'go'
-        ? onlineIds.filter(id => !exposed.has(id))
-        : onlineIds
+      const configured = tierId === 'go' ? exposed : freeConfigured
+      report.tiers[tierId].unconfigured = onlineIds.filter(id => !configured.has(id))
     }
     report.unconfiguredTotal = WATCHED_TIERS
       .reduce((total, tierId) => total + report.tiers[tierId].unconfigured.length, 0)

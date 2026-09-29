@@ -874,12 +874,17 @@ const DOCK_STATE = (over) => ({ news: null, usage: null, error: null, suppressed
 function dockPills(react, loaded, state, extra = {}) {
   const { React, renderToString } = react
   const { DockPills: Component } = loaded.module.__test
-  return renderToString(React.createElement(Component, {
-    t: key => key,
+  // The identity `t` returns the key, which carries no {n} placeholder; this
+  // stand-in keeps it so the rendered text shows the number the pill passed.
+  const html = renderToString(React.createElement(Component, {
+    t: key => (key === 'dockNews' ? 'dockNews {n}' : key),
     useDockState: selector => (selector ? selector(state) : state),
     dismissNews: () => {},
     ...extra,
   }))
+  // React separates adjacent text nodes with comments, so assertions read the
+  // visible text rather than the markup between two tags.
+  return { html, text: html.replace(/<[^>]*>/g, '').replace(/<!--[^>]*-->/g, '') }
 }
 
 test('the dock shows a new-model nudge only while something is unseen', async (t) => {
@@ -888,15 +893,24 @@ test('the dock shows a new-model nudge only while something is unseen', async (t
   if (!loaded || react === null) return
 
   const fresh = dockPills(react, loaded, DOCK_STATE({ news: { pendingTotal: 3, tiers: {} } }))
-  assert.ok(fresh.includes('dockNews'), 'an unseen notice renders the pill')
-  assert.ok(fresh.includes('>3<') || fresh.includes('3'), 'the pill carries the count')
+  assert.match(fresh.text, /dockNews 3/, 'an unseen notice renders the pill with the count')
 
   const seen = dockPills(react, loaded, DOCK_STATE({ news: { pendingTotal: 3, tiers: {} }, suppressed: 3 }))
-  assert.ok(!seen.includes('dockNews'), 'a dismissed nudge stays hidden')
+  assert.ok(!seen.text.includes('dockNews'), 'a dismissed nudge stays hidden')
 
   const none = dockPills(react, loaded, DOCK_STATE({ news: { pendingTotal: 3, tiers: {} }, suppressed: 1 }))
-  assert.ok(none.includes('dockNews'), 'one dismissed id still leaves two unseen')
-  assert.ok(!none.includes('>3<'), 'and it counts only what is left')
+  assert.match(none.text, /dockNews 2$/, 'one dismissed id still leaves two unseen, and only those')
+
+  // A backlog is not news: 94 online-but-unadopted models under a "new models"
+  // label read as 94 new models, which is the opposite of the truth.
+  const backlogOnly = dockPills(react, loaded, DOCK_STATE({
+    news: { pendingTotal: 0, tiers: {}, unconfigured: Array.from({ length: 94 }, (_, i) => `m${i}`) },
+  }))
+  assert.ok(!backlogOnly.text.includes('dockNews'), 'an unadopted backlog raises no new-model pill')
+  const backlogPlusNews = dockPills(react, loaded, DOCK_STATE({
+    news: { pendingTotal: 2, tiers: {}, unconfigured: Array.from({ length: 94 }, (_, i) => `m${i}`) },
+  }))
+  assert.match(backlogPlusNews.text, /dockNews 2$/, 'and the pill counts the new models alone')
 })
 
 test('the dock shows today\'s tokens with its source, and nothing before the first call', async (t) => {
@@ -905,18 +919,18 @@ test('the dock shows today\'s tokens with its source, and nothing before the fir
   if (!loaded || react === null) return
 
   const used = dockPills(react, loaded, DOCK_STATE({ usage: { tokens: 53250, calls: 120, source: 'live' } }))
-  assert.ok(used.includes('dockUsage'), 'the usage pill renders')
-  assert.ok(used.includes('dockSourceLive'), 'and names where the numbers come from')
-  assert.ok(!used.includes('dockSourceLog'), 'the live source is not labelled as the log')
+  assert.ok(used.html.includes('dockUsage'), 'the usage pill renders')
+  assert.ok(used.html.includes('dockSourceLive'), 'and names where the numbers come from')
+  assert.ok(!used.html.includes('dockSourceLog'), 'the live source is not labelled as the log')
 
   const fromLog = dockPills(react, loaded, DOCK_STATE({ usage: { tokens: 900, calls: 4, source: 'log' } }))
-  assert.ok(fromLog.includes('dockSourceLog'), 'the log source is labelled as such')
+  assert.ok(fromLog.html.includes('dockSourceLog'), 'the log source is labelled as such')
 
   const empty = dockPills(react, loaded, DOCK_STATE({ usage: { tokens: 0, calls: 0, source: 'live' } }))
-  assert.ok(!empty.includes('dockUsage'), 'a day with no calls shows no number')
+  assert.ok(!empty.html.includes('dockUsage'), 'a day with no calls shows no number')
 
   const unknown = dockPills(react, loaded, DOCK_STATE({ error: 'boom' }))
-  assert.ok(unknown.includes('dockFailed'), 'a failed read says so instead of going blank')
+  assert.ok(unknown.html.includes('dockFailed'), 'a failed read says so instead of going blank')
 })
 
 test('the dock source keeps one snapshot reference until a fact moves', async (t) => {
