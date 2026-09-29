@@ -46,6 +46,7 @@ export function createTools(resolve) {
     suiteStatusTool(resolve),
     suitePoolTool(resolve),
     usageModelsTool(resolve),
+    watchTool(resolve),
     modelStatusTool(resolve),
     modelAddTool(resolve),
     modelRemoveTool(resolve),
@@ -312,6 +313,89 @@ function usageModelsTool(resolve) {
         const result = await requireSuite(resolve).usageBreakdown(days)
         if (args && args.perDay === false) return { ...result, days: [] }
         return result
+      } catch (error) {
+        return { error: messageOf(error) }
+      }
+    },
+  }
+}
+
+const WATCH_ACTIONS = ['check', 'reset', 'dismiss']
+
+/**
+ * The model watch: what is new online, and the three things a person (or an
+ * agent acting for one) may do about it.
+ */
+function watchTool(resolve) {
+  return {
+    name: 'oc_watch',
+    description:
+      'Read and act on the OpenCode model watch: which model ids went online since the last check, which left, '
+      + 'and which are online but not adopted. Actions: "check" forces a listing check now; "reset" adopts what '
+      + 'is online right now as the baseline and drops what was announced (the escape hatch when the baseline was '
+      + 'taken from the wrong source); "dismiss" hides one tier\'s notices without touching the baseline. The tier '
+      + 'id comes from the report (go | free). Read-only unless an action is given.',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: WATCH_ACTIONS,
+          description: 'What to do. Omit to only read the report.',
+        },
+        tier: {
+          type: 'string',
+          enum: ['go', 'free'],
+          description: 'Which tier the action applies to. Required for "reset" and "dismiss".',
+        },
+      },
+    },
+    output: {
+      schema: { type: 'object' },
+      render(_args, value) {
+        if (value.error !== undefined) return [{ type: 'text', text: value.error }]
+        const watch = value.watch
+        if (watch === undefined || watch === null) {
+          return [{ type: 'text', text: 'The watch report is missing from this payload.' }]
+        }
+        const lines = [`Model watch · ${watch.enabled ? 'on' : 'off'} · every ${Math.round(watch.intervalMs / 60000)} min`
+          + ` · last checked ${watch.lastCheckedAt ?? 'never'}`]
+        if (watch.error !== null && watch.error !== undefined) lines.push(`  last check failed: ${watch.error}`)
+        for (const tierId of Object.keys(watch.tiers)) {
+          const tier = watch.tiers[tierId]
+          const unadopted = tier.unconfigured ?? []
+          lines.push('')
+          lines.push(`${tierId}: ${tier.online} online · ${tier.pending.length} new since last check · ${tier.gone.length} delisted`)
+          for (const item of tier.pending) lines.push(`  + ${item.id} (first seen ${item.firstSeenAt})`)
+          for (const item of tier.gone) lines.push(`  - ${item.id} (gone since ${item.firstSeenAt})`)
+          if (unadopted.length > 0) {
+            lines.push(`  online but not adopted (${unadopted.length}): ${unadopted.join(', ')}`)
+          }
+        }
+        if (value.action !== undefined) lines.push('', `Did: ${value.action}${value.tier === undefined ? '' : ` (${value.tier})`}`
+          + `${typeof value.cleared === 'number' ? ` — cleared ${value.cleared}, online ${value.online}` : ''}`)
+        return [{ type: 'text', text: lines.join('\n') }]
+      },
+    },
+    timeoutMs: 45000,
+    async execute(args) {
+      try {
+        const suite = requireSuite(resolve)
+        const action = args !== undefined && args !== null ? args.action : undefined
+        const tier = args !== undefined && args !== null ? args.tier : undefined
+        let result = { cleared: undefined, online: undefined }
+        if (action === 'check') {
+          await suite.checkModels({ fresh: true })
+        } else if (action === 'reset') {
+          if (typeof tier !== 'string') throw new Error('action "reset" needs a tier (go | free)')
+          result = await suite.reseedModelNews(tier)
+        } else if (action === 'dismiss') {
+          if (typeof tier !== 'string') throw new Error('action "dismiss" needs a tier (go | free)')
+          result = { cleared: await suite.dismissModelNews(tier) }
+        } else if (action !== undefined) {
+          throw new Error(`unknown action ${JSON.stringify(action)}; use ${WATCH_ACTIONS.join(' / ')}`)
+        }
+        return { action: action ?? null, tier: tier ?? null, ...result, watch: await suite.modelWatchReport() }
       } catch (error) {
         return { error: messageOf(error) }
       }

@@ -182,7 +182,7 @@ test('the plugin takes over the opencode-go route and serves the pi-ai catalog',
   await root.fiber.dispose()
 })
 
-test('the plugin registers all seven agent tools with unique names', async (t) => {
+test('the plugin registers all eight agent tools with unique names', async (t) => {
   const harness = await loadHarness(t)
   if (!harness) return
   const { root, tools } = await boot(harness.OpenCodeSuite, harness.Context)
@@ -195,6 +195,7 @@ test('the plugin registers all seven agent tools with unique names', async (t) =
     'oc_suite_pool',
     'oc_suite_status',
     'oc_usage_models',
+    'oc_watch',
   ])
   for (const tool of tools.tools) {
     assert.equal(typeof tool.execute, 'function', `${tool.name} is executable`)
@@ -1421,5 +1422,49 @@ test('the card can re-baseline a tier, clearing notices a wrong baseline produce
   assert.deepEqual((await plugin.modelWatchReport()).tiers.go.pending.map(row => row.id), ['genuinely-new'],
     'only what arrives after the re-baseline is news')
   await assert.rejects(() => plugin.reseedModelNews('nope'), /unknown watched tier/)
+  await root.fiber.dispose()
+})
+
+test('oc_watch reads the report and can check, reset and dismiss', async (t) => {
+  const harness = await loadHarness(t)
+  if (!harness) return
+  const { root, tools, plugin } = await boot(harness.OpenCodeSuite, harness.Context)
+  const listings = { go: ['a'], free: ['big-pickle'] }
+  plugin.tierListing = async tierId => (listings[tierId] ?? []).map(id => ({ id, name: id }))
+  const watch = tools.tools.find(tool => tool.name === 'oc_watch')
+  assert.ok(watch, 'the watch is reachable by an agent')
+  assert.ok(watch.description.length > 40)
+
+  await plugin.checkModels({ fresh: true })
+  listings.go.push('b')
+  const checked = await watch.execute({ action: 'check' })
+  assert.equal(checked.action, 'check')
+  assert.deepEqual(checked.watch.tiers.go.pending.map(row => row.id), ['b'], 'a forced check finds it')
+  const read = await watch.execute({})
+  assert.equal(read.action, null, 'no action only reads')
+  assert.equal(read.watch.pendingTotal, 1)
+
+  const reset = await watch.execute({ action: 'reset', tier: 'go' })
+  assert.equal(reset.cleared, 1, 'the baseline moved and the notice went')
+  assert.equal(reset.watch.tiers.go.pending.length, 0)
+
+  listings.go.push('c')
+  await watch.execute({ action: 'check' })
+  const dismissed = await watch.execute({ action: 'dismiss', tier: 'go' })
+  assert.equal(dismissed.cleared, 1)
+  assert.equal(dismissed.watch.tiers.go.pending.length, 0, 'dismissed but the baseline kept')
+
+  // Every refusal is a sentence, not a throw across the registry boundary.
+  for (const [args, pattern] of [
+    [{ action: 'reset' }, /needs a tier/],
+    [{ action: 'dismiss' }, /needs a tier/],
+    [{ action: 'nope', tier: 'go' }, /unknown action/],
+  ]) {
+    const result = await watch.execute(args)
+    assert.match(result.error, pattern, `${JSON.stringify(args)} is refused in words`)
+  }
+  const rendered = watch.output.render({}, checked)[0].text
+  assert.match(rendered, /Model watch/)
+  assert.match(rendered, /\+ b \(first seen/)
   await root.fiber.dispose()
 })

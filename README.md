@@ -335,6 +335,7 @@ wholesale — a partial patch would silently un-correct the other rows.
 | `oc_suite_status` | takeover state, pool roster + per-key quota, exposed models, free-tier drift |
 | `oc_suite_pool` | `switch` / `disable` / `enable` / `clear-invalid` / `clear-exhausted` |
 | `oc_usage_models` | local tokens per day and per model — the only per-model answer available |
+| `oc_watch` | read the model watch, and `check` / `reset` (re-baseline a tier) / `dismiss` |
 | `oc_model_status` | per-tier configured vs live listing, with the drift |
 | `oc_model_add` | adopt live ids or full entries into one tier |
 | `oc_model_remove` | drop ids from one tier |

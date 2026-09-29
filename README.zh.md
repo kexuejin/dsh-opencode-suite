@@ -283,6 +283,7 @@ Go 用量接口只回答一个问题 —— 每个 **Key** 的额度窗口用掉
 | `oc_suite_status` | 接管状态、Key 池名册 + 每个 Key 的额度、当前暴露的模型、免费档漂移 |
 | `oc_suite_pool` | `switch` / `disable` / `enable` / `clear-invalid` / `clear-exhausted` |
 | `oc_usage_models` | 本地 token 按天、按模型的用量 —— 唯一的「按模型」答案来源 |
+| `oc_watch` | 读模型盯盘，并可 `check`（立刻核对）/ `reset`（换基线）/ `dismiss`（知道了） |
 | `oc_model_status` | 分档的「已配置 vs 线上」对比与漂移 |
 | `oc_model_add` | 把线上 id 或完整条目加入某一档 |
 | `oc_model_remove` | 从某一档移除 id |
